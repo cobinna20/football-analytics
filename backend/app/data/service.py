@@ -1,10 +1,21 @@
 # Service: REAL first, FALLBACK only if API fails
+# Now merges 25 leagues: 8 from Football-Data + 17 from API-Football
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from .adapters.football_data import get_teams_real, get_fixtures_real, get_team_recent_goals_real, LEAGUES
 from .adapters.odds_api import get_odds_real
+from .adapters.api_football import get_fixtures as get_fixtures_api_football, NEW_LEAGUES
 
 BASE = Path(__file__).parent.parent.parent / "data" / "fallback"
+
+# Merge leagues for any code that imports LEAGUES from here
+# Old: PL, PD, SA, etc. New: AF-40, AF-144, etc.
+ALL_LEAGUES = {**LEAGUES}
+for _lid, _lname in NEW_LEAGUES.items():
+    ALL_LEAGUES[f"AF-{_lid}"] = _lname
+    ALL_LEAGUES[_lname] = _lname
+LEAGUES = ALL_LEAGUES
 
 def _load(name: str):
     p = BASE / name
@@ -20,6 +31,34 @@ def _default_stats(team_id: str):
         "last_matches": [{"npxg_for": 1.40, "npxg_against": 1.40, "minutes_leading_by_2plus": 0, "red_card": False} for _ in range(5)],
     }
 
+def _normalize_api_football(f: dict):
+    # Convert API-Football string format to Football-Data dict format
+    # so frontend + get_odds work the same for all 25 leagues
+    home = f.get("home_team", "Home")
+    away = f.get("away_team", "Away")
+    if isinstance(home, dict):
+        home_name = home.get("name", "Home")
+    else:
+        home_name = str(home)
+    if isinstance(away, dict):
+        away_name = away.get("name", "Away")
+    else:
+        away_name = str(away)
+    return {
+        "id": f.get("id"),
+        "date": f.get("date", "")[:10],
+        "time": f.get("time", ""),
+        "home_team": {"id": str(f.get("id", "")), "name": home_name},
+        "away_team": {"id": str(f.get("id", "")), "name": away_name},
+        "home_score": f.get("home_score"),
+        "away_score": f.get("away_score"),
+        "score": {"fullTime": {"home": f.get("home_score"), "away": f.get("away_score")}},
+        "status": f.get("status", "SCHEDULED"),
+        "competition": f.get("league"),
+        "league": f.get("league"),
+        "league_code": f.get("league_code"),
+    }
+
 class DataService:
     async def get_teams(self, competition: str = "PL"):
         real = await get_teams_real()
@@ -28,9 +67,41 @@ class DataService:
         return _load("teams.json")
 
     async def get_fixtures(self, competition: str = "ALL", date_from: str | None = None, date_to: str | None = None):
+        # 1. Old 8 leagues from Football-Data
         real = await get_fixtures_real(competition, date_from, date_to)
-        if real:
-            return real
+        if real is None:
+            real = []
+
+        # 2. New 17 leagues from API-Football
+        api_fixtures = []
+        try:
+            # If no date range given, use 1 week before + 1 week after today
+            _from = date_from
+            _to = date_to
+            if not _from or not _to:
+                today = date.today()
+                _from = _from or (today - timedelta(days=7)).isoformat()
+                _to = _to or (today + timedelta(days=7)).isoformat()
+            raw_api = get_fixtures_api_football(_from, _to)
+            for _f in raw_api or []:
+                nf = _normalize_api_football(_f)
+                # If user asked for one league, keep only that league
+                if competition and competition != "ALL":
+                    if nf.get("league") != competition and nf.get("league_code") != competition and nf.get("competition") != competition:
+                        continue
+                api_fixtures.append(nf)
+        except Exception:
+            api_fixtures = []
+
+        combined = list(real) + api_fixtures
+        if combined:
+            # Sort by date so oldest first
+            try:
+                combined.sort(key=lambda x: str(x.get("date", "")))
+            except Exception:
+                pass
+            return combined
+
         # Fallback - filter by date if given
         all_f = _load("fixtures.json")
         if date_from and date_to:
@@ -74,7 +145,12 @@ class DataService:
         fixtures = await self.get_fixtures("ALL")
         fx = next((f for f in fixtures if str(f["id"]) == str(fixture_id)), None)
         if fx:
-            real_odds = await get_odds_real(fx["home_team"]["name"], fx["away_team"]["name"])
+            # Works for both formats: dict {"name": "Arsenal"} and string "Arsenal"
+            ht = fx.get("home_team")
+            at = fx.get("away_team")
+            home_name = ht.get("name") if isinstance(ht, dict) else str(ht)
+            away_name = at.get("name") if isinstance(at, dict) else str(at)
+            real_odds = await get_odds_real(home_name, away_name)
             if real_odds:
                 return real_odds
         odds_list = _load("odds.json")
