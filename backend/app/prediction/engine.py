@@ -1,27 +1,26 @@
-# Main prediction engine
-# Tier 1: Recent form 45% - Tier 2: Situation 25% - Tier 3: Small details 15% - Tier 4: H2H + Market 15%
-
+# Main prediction engine - FIXED to handle dict stats from real API
 from typing import Dict, List, Tuple
 from .schemas import PredictionResult, ScorelineProb
 from .elo import elo_to_goals_adjustment
 from .poisson import build_scoreline_matrix, matrix_to_1x2, matrix_to_over_under, matrix_to_btts
 
+def _v(obj, key, default=0.0):
+    # Helper: works whether obj is a dict {"npxg": 1.4} or an object stats.npxg
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
 def weighted_npxg(last_matches: List, is_home: bool = True) -> Tuple[float, float]:
-    # Recent matches count more. Last match weight = 1.0, older = 0.85, 0.72, etc.
-    # Cap crazy games and discount garbage time when leading by 2+.
     total_w = 0.0
     sum_for = 0.0
     sum_against = 0.0
-    for i, m in enumerate(last_matches[:8]):
+    for i, m in enumerate((last_matches or [])[:8]):
         w = 0.85 ** i
-        # Game-state filter: if team led by 2+ for long, that match is less useful
-        if m.minutes_leading_by_2plus > 20:
+        if _v(m, "minutes_leading_by_2plus", 0) > 20:
             w *= 0.8
-        # Outlier capping: no single match can be more than 3.5 xG
-        npxg_for = min(m.npxg_for, 3.5)
-        npxg_against = min(m.npxg_against, 3.5)
-        # Red card game is less useful
-        if m.red_card:
+        npxg_for = min(_v(m, "npxg_for", 1.4), 3.5)
+        npxg_against = min(_v(m, "npxg_against", 1.4), 3.5)
+        if _v(m, "red_card", False):
             w *= 0.7
         sum_for += w * npxg_for
         sum_against += w * npxg_against
@@ -32,64 +31,43 @@ def weighted_npxg(last_matches: List, is_home: bool = True) -> Tuple[float, floa
 
 def calculate_expected_goals(home_stats, away_stats, context: Dict | None = None) -> Tuple[float, float]:
     ctx = context or {}
-    # Tier 1: Base from weighted recent form + season npxG
-    home_w_for, home_w_against = weighted_npxg(home_stats.last_matches)
-    away_w_for, away_w_against = weighted_npxg(away_stats.last_matches)
-    home_attack = 0.6 * home_w_for + 0.4 * home_stats.npxg
-    home_defense = 0.6 * home_w_against + 0.4 * home_stats.npxga
-    away_attack = 0.6 * away_w_for + 0.4 * away_stats.npxg
-    away_defense = 0.6 * away_w_against + 0.4 * away_stats.npxga
-
-    # PPDA and Field Tilt adjust attack: lower PPDA = more pressing = more attack
-    home_press = max(-0.1, min(0.1, (12.0 - home_stats.ppda) * 0.02))
-    away_press = max(-0.1, min(0.1, (12.0 - away_stats.ppda) * 0.02))
-    home_tilt = (home_stats.field_tilt - 50) / 100.0 * 0.3
-    away_tilt = (away_stats.field_tilt - 50) / 100.0 * 0.3
-
-    # Set-piece edge
-    home_set = (home_stats.set_piece_xg - home_stats.set_piece_xga) * 0.5
-    away_set = (away_stats.set_piece_xg - away_stats.set_piece_xga) * 0.5
-
-    # Base expected goals: attack of one vs defense of other
+    home_w_for, home_w_against = weighted_npxg(_v(home_stats, "last_matches", []))
+    away_w_for, away_w_against = weighted_npxg(_v(away_stats, "last_matches", []))
+    home_attack = 0.6 * home_w_for + 0.4 * _v(home_stats, "npxg", 1.4)
+    home_defense = 0.6 * home_w_against + 0.4 * _v(home_stats, "npxga", 1.4)
+    away_attack = 0.6 * away_w_for + 0.4 * _v(away_stats, "npxg", 1.4)
+    away_defense = 0.6 * away_w_against + 0.4 * _v(away_stats, "npxga", 1.4)
+    home_press = max(-0.1, min(0.1, (12.0 - _v(home_stats, "ppda", 11.5)) * 0.02))
+    away_press = max(-0.1, min(0.1, (12.0 - _v(away_stats, "ppda", 11.5)) * 0.02))
+    home_tilt = (_v(home_stats, "field_tilt", 50) - 50) / 100.0 * 0.3
+    away_tilt = (_v(away_stats, "field_tilt", 50) - 50) / 100.0 * 0.3
+    home_set = (_v(home_stats, "set_piece_xg", 0.35) - _v(home_stats, "set_piece_xga", 0.35)) * 0.5
+    away_set = (_v(away_stats, "set_piece_xg", 0.35) - _v(away_stats, "set_piece_xga", 0.35)) * 0.5
     exp_home = (home_attack + away_defense) / 2.0
     exp_away = (away_attack + home_defense) / 2.0
     exp_home += home_press + home_tilt + home_set
     exp_away += away_press + away_tilt + away_set
-
-    # Elo adjustment from npxG difference
-    elo_home = 1500 + (home_stats.npxg - home_stats.npxga) * 80
-    elo_away = 1500 + (away_stats.npxg - away_stats.npxga) * 80
+    elo_home = 1500 + (_v(home_stats, "npxg", 1.4) - _v(home_stats, "npxga", 1.4)) * 80
+    elo_away = 1500 + (_v(away_stats, "npxg", 1.4) - _v(away_stats, "npxga", 1.4)) * 80
     exp_home += elo_to_goals_adjustment(elo_home - elo_away)
     exp_away += elo_to_goals_adjustment(elo_away - elo_home)
-
-    # Tier 2: Home advantage + rest + missing players
-    exp_home += 0.25  # Home advantage
-    home_rest = ctx.get("home_rest_days", 7)
-    away_rest = ctx.get("away_rest_days", 7)
-    if home_rest < 3:
+    exp_home += 0.25
+    if ctx.get("home_rest_days", 7) < 3:
         exp_home -= 0.08
-    if away_rest < 3:
+    if ctx.get("away_rest_days", 7) < 3:
         exp_away -= 0.08
     exp_home -= ctx.get("home_missing_key", 0) * 0.07
     exp_away -= ctx.get("away_missing_key", 0) * 0.07
     exp_home -= ctx.get("home_missing_gk", 0) * 0.08
     exp_away -= ctx.get("away_missing_gk", 0) * 0.08
-
-    # Tier 3: Referee penalty rate, weather, motivation
     exp_home += ctx.get("ref_penalty_rate", 0.0) * 0.05
     exp_away += ctx.get("ref_penalty_rate", 0.0) * 0.05
     exp_home += ctx.get("home_motivation", 0.0) * 0.05
     exp_away += ctx.get("away_motivation", 0.0) * 0.05
-
-    # Tier 4: H2H filter - only if same managers and recent, else weight = 0
     h2h_w = ctx.get("h2h_weight", 0.0)
     if h2h_w > 0:
-        h2h_home_xg = ctx.get("h2h_home_xg", exp_home)
-        h2h_away_xg = ctx.get("h2h_away_xg", exp_away)
-        exp_home = (1 - h2h_w) * exp_home + h2h_w * h2h_home_xg
-        exp_away = (1 - h2h_w) * exp_away + h2h_w * h2h_away_xg
-
-    # Keep in sane range
+        exp_home = (1 - h2h_w) * exp_home + h2h_w * ctx.get("h2h_home_xg", exp_home)
+        exp_away = (1 - h2h_w) * exp_away + h2h_w * ctx.get("h2h_away_xg", exp_away)
     exp_home = max(0.2, min(3.8, exp_home))
     exp_away = max(0.2, min(3.8, exp_away))
     return exp_home, exp_away
@@ -117,4 +95,4 @@ def predict(fixture_id: str, home_team: str, away_team: str, home_stats, away_st
         expected_away_goals=exp_away,
         most_likely_score=f"{most.home_goals}-{most.away_goals}",
         scorelines=scorelines,
-      )
+    )
