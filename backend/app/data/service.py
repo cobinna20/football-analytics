@@ -13,6 +13,25 @@ def _load(name: str):
         return []
     return json.loads(p.read_text())
 
+def _default_stats(team_id: str):
+    # If no stats found for a real team, use safe default so prediction still works
+    return {
+        "team_id": str(team_id),
+        "team_name": f"Team {team_id}",
+        "npxg": 1.40,
+        "npxga": 1.40,
+        "ppda": 11.50,
+        "field_tilt": 50.0,
+        "set_piece_xg": 0.35,
+        "set_piece_xga": 0.35,
+        "defensive_compactness": 68.0,
+        "source": "default",
+        "last_matches": [
+            {"npxg_for": 1.40, "npxg_against": 1.40, "minutes_leading_by_2plus": 0, "red_card": False}
+            for _ in range(5)
+        ],
+    }
+
 class DataService:
     async def get_teams(self, competition: str = "PL"):
         real = await get_teams_real()
@@ -27,7 +46,6 @@ class DataService:
         return _load("fixtures.json")
 
     async def get_team_stats(self, team_id: str, competition: str = "PL"):
-        # Try real recent goals -> build real stats from real matches
         matches = await get_team_recent_goals_real(team_id)
         if matches:
             goals_for = []
@@ -45,8 +63,6 @@ class DataService:
             if goals_for:
                 avg_for = sum(goals_for) / len(goals_for)
                 avg_against = sum(goals_against) / len(goals_against)
-                # Real goals -> estimated npxG (real data, not demo)
-                # We use goals * 0.95 as npxG estimate when xG feed is not on free tier
                 return {
                     "team_id": str(team_id),
                     "team_name": matches[0]["homeTeam"]["name"] if str(matches[0]["homeTeam"]["id"]) == str(team_id) else matches[0]["awayTeam"]["name"],
@@ -63,16 +79,15 @@ class DataService:
                         for g, ga in zip(goals_for, goals_against)
                     ],
                 }
-        # Fallback demo
         stats = _load("team_stats.json")
         for s in stats:
             if str(s.get("team_id")) == str(team_id):
                 s["source"] = "fallback"
                 return s
-        return None
+        # FIX: Never return None, always return default so prediction never gets stuck
+        return _default_stats(team_id)
 
     async def get_odds(self, fixture_id: str):
-        # Need fixture to match odds by team names
         fixtures = await self.get_fixtures("PL")
         fx = next((f for f in fixtures if str(f["id"]) == str(fixture_id)), None)
         if fx:
