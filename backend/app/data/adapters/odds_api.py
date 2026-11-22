@@ -1,53 +1,33 @@
+# REAL DATA: The Odds API - real bookmaker odds
+# Free: 500 requests / month. Needs ODDS_API_KEY
+import os
 import httpx
-from datetime import datetime, timezone
-from typing import Optional
-from ..schemas import Odds
-from .base import BaseAdapter
 
-BASE_URL = "https://api.the-odds-api.com/v4/sports"
+KEY = os.getenv("ODDS_API_KEY", "")
+BASE = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds"
 
-class OddsApiAdapter(BaseAdapter):
-    name = "the-odds-api"
-
-    def __init__(self, api_key: str = ""):
-        self.api_key = api_key
-
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.api_key)
-
-    async def get_odds(self, fixture_id: str) -> Optional[Odds]:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.get(
-                f"{BASE_URL}/soccer_epl/odds",
-                params={"apiKey": self.api_key, "regions": "uk", "markets": "h2h,totals,both_teams_to_score", "oddsFormat": "decimal"},
-            )
-            r.raise_for_status()
+async def get_odds_real(fixture_home: str, fixture_away: str):
+    # Returns {home, draw, away} real odds or None
+    if not KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(BASE, params={"apiKey": KEY, "regions": "uk", "markets": "h2h", "oddsFormat": "decimal"})
+            if r.status_code != 200:
+                return None
             data = r.json()
-        for event in data:
-            if str(event.get("id")) != str(fixture_id):
-                continue
-            for book in event.get("bookmakers", []):
-                h2h = next((m for m in book.get("markets", []) if m["key"] == "h2h"), None)
-                totals = next((m for m in book.get("markets", []) if m["key"] == "totals"), None)
-                btts = next((m for m in book.get("markets", []) if m["key"] == "both_teams_to_score"), None)
-                if not h2h:
-                    continue
-                prices = {o["name"]: o["price"] for o in h2h.get("outcomes", [])}
-                over = next((o["price"] for o in (totals or {}).get("outcomes", []) if o["name"] == "Over"), 1.90)
-                under = next((o["price"] for o in (totals or {}).get("outcomes", []) if o["name"] == "Under"), 1.90)
-                yes = next((o["price"] for o in (btts or {}).get("outcomes", []) if o["name"] == "Yes"), 1.80)
-                no = next((o["price"] for o in (btts or {}).get("outcomes", []) if o["name"] == "No"), 2.00)
-                return Odds(
-                    fixture_id=str(fixture_id),
-                    bookmaker=book.get("title", "Bookmaker"),
-                    home=float(prices.get("Home", 2.0)),
-                    draw=float(prices.get("Draw", 3.4)),
-                    away=float(prices.get("Away", 3.8)),
-                    over_25=float(over),
-                    under_25=float(under),
-                    btts_yes=float(yes),
-                    btts_no=float(no),
-                    updated_at=datetime.now(timezone.utc),
-                )
+            for game in data:
+                # Match by team name - simple fuzzy match
+                if fixture_home.lower() in game["home_team"].lower() or game["home_team"].lower() in fixture_home.lower():
+                    # Find first bookmaker with h2h
+                    for book in game.get("bookmakers", []):
+                        for market in book.get("markets", []):
+                            if market["key"] == "h2h":
+                                outcomes = {o["name"]: o["price"] for o in market["outcomes"]}
+                                home = outcomes.get(game["home_team"], 2.0)
+                                away = outcomes.get(game["away_team"], 3.0)
+                                draw = outcomes.get("Draw", 3.2)
+                                return {"home": home, "draw": draw, "away": away, "bookmaker": book["title"], "source": "real"}
+            return None
+    except Exception:
         return None
