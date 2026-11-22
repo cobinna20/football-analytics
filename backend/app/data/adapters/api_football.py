@@ -1,62 +1,74 @@
-import httpx
-from typing import List, Optional
-from ..schemas import Team, Fixture, TeamStats, Odds
-from .base import BaseAdapter
+import os
+import requests
 
-BASE_URL = "https://v3.football.api-sports.io"
-LEAGUE_MAP = {"PL": 39}
+API_KEY = os.getenv("API_FOOTBALL_KEY", "")
+BASE = "https://v3.football.api-sports.io"
 
-class ApiFootballAdapter(BaseAdapter):
-    name = "api-football"
+# 17 leagues here + 8 old leagues in football_data.py = 25 total
+NEW_LEAGUES = {
+    40: "Championship",
+    144: "Belgian Pro League",
+    203: "Turkish Super Lig",
+    179: "Scottish Premiership",
+    307: "Saudi Pro League",
+    253: "MLS",
+    71: "Brazil Serie A",
+    128: "Argentina Primera",
+    3: "Europa League",
+    848: "Conference League",
+    136: "Serie B Italy",
+    141: "La Liga 2 Spain",
+    99: "Bundesliga 2 Germany",
+    101: "Ligue 2 France",
+    262: "Liga MX Mexico",
+    98: "J1 League Japan",
+    292: "K League 1 Korea",
+}
 
-    def __init__(self, api_key: str = ""):
-        self.api_key = api_key
+def _headers():
+    return {"x-apisports-key": API_KEY}
 
-    @property
-    def is_configured(self) -> bool:
-        return bool(self.api_key)
-
-    async def _get(self, path: str, params: dict) -> dict:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.get(
-                f"{BASE_URL}{path}",
-                headers={"x-apisports-key": self.api_key},
-                params=params,
-            )
-            r.raise_for_status()
-            return r.json()
-
-    async def get_teams(self, competition: str = "PL") -> List[Team]:
-        league = LEAGUE_MAP.get(competition, 39)
-        data = await self._get("/teams", {"league": league, "season": 2025})
-        out: List[Team] = []
-        for item in data.get("response", []):
-            t = item["team"]
-            out.append(Team(
-                id=str(t["id"]),
-                name=t["name"],
-                short_name=t.get("code") or t["name"][:3].upper(),
-                crest=t.get("logo"),
-                league=competition,
-                country=t.get("country", "England"),
-            ))
-        return out
-
-    async def get_fixtures(self, competition: str = "PL") -> List[Fixture]:
-        league = LEAGUE_MAP.get(competition, 39)
-        data = await self._get("/fixtures", {"league": league, "season": 2025, "next": 10})
-        out: List[Fixture] = []
-        for item in data.get("response", []):
-            fx = item["fixture"]
-            teams = item["teams"]
-            out.append(Fixture(
-                id=str(fx["id"]),
-                competition=competition,
-                matchday=1,
-                home_team=Team(id=str(teams["home"]["id"]), name=teams["home"]["name"], short_name=teams["home"]["name"][:3].upper(), crest=teams["home"].get("logo"), league=competition),
-                away_team=Team(id=str(teams["away"]["id"]), name=teams["away"]["name"], short_name=teams["away"]["name"][:3].upper(), crest=teams["away"].get("logo"), league=competition),
-                kickoff=fx["date"],
-                status=fx["status"].get("short", "SCHEDULED"),
-                venue=fx.get("venue", {}).get("name"),
-            ))
-        return out
+def get_fixtures(start_date: str, end_date: str):
+    if not API_KEY:
+        return []
+    all_fixtures = []
+    for league_id, league_name in NEW_LEAGUES.items():
+        try:
+            url = f"{BASE}/fixtures"
+            params = {
+                "league": league_id,
+                "season": 2026,
+                "from": start_date,
+                "to": end_date,
+                "timezone": "Europe/London",
+            }
+            r = requests.get(url, headers=_headers(), params=params, timeout=15)
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            for item in data.get("response", []):
+                fixture = item.get("fixture", {})
+                teams = item.get("teams", {})
+                goals = item.get("goals", {})
+                status = fixture.get("status", {}).get("short", "NS")
+                if status in ["FT", "AET", "PEN"]:
+                    match_status = "FINISHED"
+                elif status in ["1H", "2H", "HT", "ET", "BT", "P"]:
+                    match_status = "LIVE"
+                else:
+                    match_status = "SCHEDULED"
+                all_fixtures.append({
+                    "id": f"af-{fixture.get('id')}",
+                    "date": fixture.get("date", "")[:10],
+                    "time": fixture.get("date", "")[11:16],
+                    "home_team": teams.get("home", {}).get("name", "Home"),
+                    "away_team": teams.get("away", {}).get("name", "Away"),
+                    "home_score": goals.get("home"),
+                    "away_score": goals.get("away"),
+                    "status": match_status,
+                    "league": league_name,
+                    "league_code": f"AF-{league_id}",
+                })
+        except Exception:
+            continue
+    return all_fixtures
