@@ -1,0 +1,8 @@
+[
+  {"id": "1", "name": "【entity-Arsenal¦canonical_name=Arsenal】", "short_name": "ARS", "crest": "https://crests.football-data.org/57.png", "league": "PL", "country": "England"},
+  {"id": "2", "name": "【entity-Manchester City¦canonical_name=Manchester City】", "short_name": "MCI", "crest": "https://crests.football-data.org/65.png", "league": "PL", "country": "England"},
+  {"id": "3", "name": "【entity-Liverpool¦canonical_name=Liverpool】", "short_name": "LIV", "crest": "https://crests.football-data.org/64.png", "league": "PL", "country": "England"},
+  {"id": "4", "name": "【entity-Chelsea¦canonical_name=Chelsea】", "short_name": "CHE", "crest": "https://crests.football-data.org/61.png", "league": "PL", "country": "England"},
+  {"id": "5", "name": "【entity-Manchester United¦canonical_name=Manchester City】", "short_name": "MUN", "crest": "https://crests.football-data.org/66.png", "league": "PL", "country": "England"},
+  {"id": "6", "name": "【entity-Tottenham Hotspur¦canonical_name=Tottenham Hotspur】", "short_name": "TOT", "crest": "https://crests.football-data.org/73.png", "league": "PL", "country": "England"}
+]
