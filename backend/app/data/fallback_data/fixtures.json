@@ -1,0 +1,32 @@
+[
+  {
+    "id": "101",
+    "competition": "PL",
+    "matchday": 14,
+    "home_team": {"id": "1", "name": "【entity-Arsenal¦canonical_name=Arsenal】", "short_name": "ARS", "crest": "https://crests.football-data.org/57.png", "league": "PL", "country": "England"},
+    "away_team": {"id": "4", "name": "【entity-Chelsea¦canonical_name=Chelsea】", "short_name": "CHE", "crest": "https://crests.football-data.org/61.png", "league": "PL", "country": "England"},
+    "kickoff": "2026-11-29T17:30:00+00:00",
+    "status": "SCHEDULED",
+    "venue": "Emirates Stadium"
+  },
+  {
+    "id": "102",
+    "competition": "PL",
+    "matchday": 14,
+    "home_team": {"id": "3", "name": "【entity-Liverpool¦canonical_name=Liverpool】", "short_name": "LIV", "crest": "https://crests.football-data.org/64.png", "league": "PL", "country": "England"},
+    "away_team": {"id": "2", "name": "【entity-Manchester City¦canonical_name=Manchester City】", "short_name": "MCI", "crest": "https://crests.football-data.org/65.png", "league": "PL", "country": "England"},
+    "kickoff": "2026-11-29T16:00:00+00:00",
+    "status": "SCHEDULED",
+    "venue": "Anfield"
+  },
+  {
+    "id": "103",
+    "competition": "PL",
+    "matchday": 14,
+    "home_team": {"id": "5", "name": "Manchester United", "short_name": "MUN", "crest": "https://crests.football-data.org/66.png", "league": "PL", "country": "England"},
+    "away_team": {"id": "6", "name": "Tottenham Hotspur", "short_name": "TOT", "crest": "https://crests.football-data.org/73.png", "league": "PL", "country": "England"},
+    "kickoff": "2026-11-30T19:45:00+00:00",
+    "status": "SCHEDULED",
+    "venue": "Old Trafford"
+  }
+    ]
