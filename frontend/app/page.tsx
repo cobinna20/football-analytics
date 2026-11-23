@@ -16,6 +16,7 @@ function dayLabel(iso: string) {
   if (diff === 1) return "Tomorrow";
   return d.toLocaleDateString("en-GB", { weekday: "short" });
 }
+function safeArray(v: any): any[] { return Array.isArray(v) ? v : []; }
 
 export default function Home() {
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
@@ -39,7 +40,6 @@ export default function Home() {
     return arr;
   }, []);
 
-  // Keep Render awake while app is open
   useEffect(() => {
     const ping = () => { fetch(`${API_BASE}/health`).catch(() => {}); };
     ping();
@@ -47,53 +47,53 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  // Load fixtures for one date, cached 5 min
   const loadFixtures = async (dateStr: string) => {
     const cached = fixturesCache.current.get(dateStr);
-    if (cached && Date.now() - cached.t < 300000) { setFixtures(cached.data); return cached.data; }
+    if (cached && Date.now() - cached.t < 300000) { setFixtures(safeArray(cached.data) as Fixture[]); return safeArray(cached.data); }
     try {
       const r = await fetch(`${API_BASE}/api/fixtures?date=${dateStr}`);
       const data = await r.json();
-      fixturesCache.current.set(dateStr, { t: Date.now(), data });
-      setFixtures(data);
-      return data;
-    } catch { return []; }
+      const arr = safeArray(data);
+      fixturesCache.current.set(dateStr, { t: Date.now(), data: arr as Fixture[] });
+      setFixtures(arr as Fixture[]);
+      return arr;
+    } catch { setFixtures([]); return []; }
   };
 
   useEffect(() => {
-    getLeagues().then(setLeagues).catch(() => {});
+    getLeagues().then((l) => setLeagues(safeArray(l) as League[])).catch(() => setLeagues([]));
     loadFixtures(fmtDate(new Date())).then((f) => {
       setLoading(false);
-      if (f.length > 0) setSelectedId(f[0].id);
+      const arr = safeArray(f);
+      if (arr.length > 0 && (arr[0] as any).id) setSelectedId((arr[0] as any).id);
     });
   }, []);
 
   useEffect(() => { loadFixtures(selectedDate); }, [selectedDate]);
 
-  // Prefetch tomorrow in background
   useEffect(() => {
     const d = new Date(selectedDate + "T12:00:00"); d.setDate(d.getDate() + 1);
     const next = fmtDate(d);
     if (!fixturesCache.current.has(next)) {
-      fetch(`${API_BASE}/api/fixtures?date=${next}`).then((r) => r.json()).then((data) => fixturesCache.current.set(next, { t: Date.now(), data })).catch(() => {});
+      fetch(`${API_BASE}/api/fixtures?date=${next}`).then((r) => r.json()).then((data) => fixturesCache.current.set(next, { t: Date.now(), data: safeArray(data) as Fixture[] })).catch(() => {});
     }
   }, [selectedDate]);
 
-  const fixturesForDate = useMemo(() => fixtures.filter((f) => f.date.slice(0, 10) === selectedDate), [fixtures, selectedDate]);
+  const safeFixtures = safeArray(fixtures) as Fixture[];
+  const fixturesForDate = useMemo(() => safeFixtures.filter((f) => ((f as any).date || "").slice(0, 10) === selectedDate), [fixtures, selectedDate]);
   const leaguesForDate = useMemo(() => {
     const map = new Map<string, string>();
-    fixturesForDate.forEach((f) => map.set(f.league_code || f.competition, f.league_name || f.league_code));
+    fixturesForDate.forEach((f: any) => map.set(f.league_code || f.competition || "", f.league_name || f.league_code || ""));
     return Array.from(map.entries()).map(([code, name]) => ({ code, name }));
   }, [fixturesForDate]);
   const visibleFixtures = useMemo(() => {
     if (selectedLeague === "ALL") return fixturesForDate;
-    return fixturesForDate.filter((f) => (f.league_code || f.competition) === selectedLeague);
+    return fixturesForDate.filter((f: any) => (f.league_code || f.competition || "") === selectedLeague);
   }, [fixturesForDate, selectedLeague]);
 
-  // MAX SPEED: 1 bundle call = rest + prediction + players stats together
   useEffect(() => {
     if (!selectedId) return;
-    const fx = fixtures.find((x) => x.id === selectedId);
+    const fx: any = safeFixtures.find((x: any) => x.id === selectedId);
     if (!fx) return;
     const cached = bundleCache.current.get(selectedId);
     if (cached) {
@@ -107,7 +107,7 @@ export default function Home() {
     fetch(`${API_BASE}/api/match-bundle?fixture_id=${selectedId}`)
       .then((r) => r.json())
       .then((d) => {
-        if (d.prediction) {
+        if (d && d.prediction && !d.error) {
           bundleCache.current.set(selectedId, d);
           setContext({ home_rest_days: d.home_rest ?? d.rest?.home_rest ?? 7, away_rest_days: d.away_rest ?? d.rest?.away_rest ?? 7, home_missing_key: 0, away_missing_key: 0 });
           setPrediction(d.prediction);
@@ -118,7 +118,6 @@ export default function Home() {
       .catch(() => {});
   }, [selectedId, fixtures]);
 
-  // What-If manual change only - debounced + cached, skip if same as bundle
   useEffect(() => {
     if (!selectedId) return;
     const bundle = bundleCache.current.get(selectedId);
@@ -127,13 +126,13 @@ export default function Home() {
     const key = `${selectedId}-${context.home_rest_days}-${context.away_rest_days}-${context.home_missing_key}-${context.away_missing_key}`;
     if (predCache.current.has(key)) { setPrediction(predCache.current.get(key)!); return; }
     const t = setTimeout(() => {
-      getPrediction(selectedId, context).then((p) => { predCache.current.set(key, p); setPrediction(p); });
+      getPrediction(selectedId, context).then((p) => { if (p && !(p as any).error) { predCache.current.set(key, p); setPrediction(p); } }).catch(() => {});
     }, 400);
     return () => clearTimeout(t);
   }, [context, selectedId]);
 
-  const selected = fixtures.find((f) => f.id === selectedId);
-  const finishedCount = fixturesForDate.filter((f) => f.status === "FINISHED").length;
+  const selected: any = safeFixtures.find((f: any) => f.id === selectedId);
+  const finishedCount = fixturesForDate.filter((f: any) => f.status === "FINISHED").length;
 
   return (
     <main className="min-h-screen p-4 md:p-6 max-w-6xl mx-auto space-y-6">
@@ -157,7 +156,7 @@ export default function Home() {
         <div className="flex gap-2 flex-wrap">
           <button onClick={() => setSelectedLeague("ALL")} className={`px-4 py-2 rounded-full text-sm ${selectedLeague === "ALL" ? "bg-emerald-500 text-white" : "bg-slate-800"}`}>All leagues ({fixturesForDate.length})</button>
           {leaguesForDate.map((l) => {
-            const count = fixturesForDate.filter((f) => (f.league_code || f.competition) === l.code).length;
+            const count = fixturesForDate.filter((f: any) => (f.league_code || f.competition || "") === l.code).length;
             return <button key={l.code} onClick={() => setSelectedLeague(l.code)} className={`px-4 py-2 rounded-full text-sm ${selectedLeague === l.code ? "bg-emerald-500 text-white" : "bg-slate-800"}`}>{l.name} ({count})</button>;
           })}
         </div>
@@ -166,20 +165,20 @@ export default function Home() {
       <div>
         <p className="text-sm font-bold mb-2">⚽ Matches - {selectedDate} {selectedLeague !== "ALL" ? `- ${leaguesForDate.find((l) => l.code === selectedLeague)?.name || selectedLeague}` : ""}</p>
         <div className="flex gap-2 flex-wrap">
-          {visibleFixtures.map((f) => (
+          {visibleFixtures.map((f: any) => (
             <button key={f.id} onClick={() => setSelectedId(f.id)} className={`px-4 py-2 rounded-full text-sm ${selectedId === f.id ? "bg-emerald-500 text-white" : "bg-slate-800"}`}>
-              {f.home_team.short_name} {f.status === "FINISHED" ? `${f.home_score}-${f.away_score}` : "vs"} {f.away_team.short_name}
-              <span className="block text-[10px] opacity-70">{f.status === "FINISHED" ? "Full Time" : f.date.slice(11, 16) + " UTC"}</span>
+              {f.home_team?.short_name || f.home_team?.name || "Home"} {f.status === "FINISHED" ? `${f.home_score ?? ""}-${f.away_score ?? ""}` : "vs"} {f.away_team?.short_name || f.away_team?.name || "Away"}
+              <span className="block text-[10px] opacity-70">{f.status === "FINISHED" ? "Full Time" : (f.date || "").slice(11, 16) + " UTC"}</span>
             </button>
           ))}
         </div>
         {visibleFixtures.length === 0 && <p className="text-slate-400 text-sm">No matches for this league on this date.</p>}
       </div>
       {loading && <p className="text-slate-400">Loading fixtures...</p>}
-      {!loading && fixtures.length === 0 && <p className="text-slate-400">No fixtures. Check backend.</p>}
-      {selected && <WhatIfSimulator context={context} onChange={setContext} homeName={selected.home_team.name} awayName={selected.away_team.name} />}
-      {prediction && <PredictionCard prediction={prediction} homeStats={homeStats} awayStats={awayStats} />}
-      {!prediction && selectedId && <p className="text-slate-400">Loading prediction... (first load after idle can take 20-30s on free Render, next loads are faster)</p>}
+      {!loading && safeFixtures.length === 0 && <p className="text-slate-400">No fixtures. Check backend.</p>}
+      {selected && <WhatIfSimulator context={context} onChange={setContext} homeName={selected.home_team?.name || "Home"} awayName={selected.away_team?.name || "Away"} />}
+      {prediction && !(prediction as any).error && <PredictionCard prediction={prediction} homeStats={homeStats} awayStats={awayStats} />}
+      {!prediction && selectedId && <p className="text-slate-400">Loading prediction...</p>}
     </main>
   );
-    }
+}
