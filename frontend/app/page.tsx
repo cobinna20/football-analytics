@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { getFixtures, getLeagues, type Fixture, type League } from "@/lib/api";
 import { getPrediction, getTeamStats, type Prediction, type TeamStats } from "@/lib/predict";
 import PredictionCard from "@/components/PredictionCard";
@@ -29,6 +29,8 @@ export default function Home() {
   const [awayStats, setAwayStats] = useState<TeamStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [context, setContext] = useState<SimContext>({ home_rest_days: 7, away_rest_days: 7, home_missing_key: 0, away_missing_key: 0 });
+  const [restReady, setRestReady] = useState(false);
+  const lastPredKey = useRef("");
 
   const dates = useMemo(() => {
     const arr: string[] = [];
@@ -58,15 +60,16 @@ export default function Home() {
     return fixturesForDate.filter((f) => (f.league_code || f.competition) === selectedLeague);
   }, [fixturesForDate, selectedLeague]);
 
-  // PHASE B: AUTO REST - when you tap a new match, fetch real rest from backend and auto-fill What-If
+  // PHASE B FAST: Auto Rest - fetch once per fixture, then mark ready
   useEffect(() => {
     if (!selectedId) return;
+    setRestReady(false);
     const fx = fixtures.find((x) => x.id === selectedId);
     if (!fx) return;
     const homeId = fx.home_team.id;
     const awayId = fx.away_team.id;
     const fixtureDate = fx.date.slice(0, 10);
-    if (!homeId || !awayId || !fixtureDate) return;
+    if (!homeId || !awayId || !fixtureDate) { setRestReady(true); return; }
     fetch(`${API_BASE}/api/rest-both?home_team_id=${homeId}&away_team_id=${awayId}&fixture_date=${fixtureDate}`)
       .then((r) => r.json())
       .then((d) => {
@@ -74,18 +77,26 @@ export default function Home() {
           setContext((prev) => ({ ...prev, home_rest_days: d.home_rest, away_rest_days: d.away_rest, home_missing_key: 0, away_missing_key: 0 }));
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setRestReady(true));
   }, [selectedId, fixtures]);
 
+  // FAST PREDICTION: Wait for Rest to be ready + 400ms debounce, cache same request
   useEffect(() => {
-    if (!selectedId) return;
-    setPrediction(null);
+    if (!selectedId || !restReady) return;
     const fx = fixtures.find((x) => x.id === selectedId);
     if (!fx) return;
-    getPrediction(selectedId, context).then(setPrediction);
-    getTeamStats(fx.home_team.id).then(setHomeStats);
-    getTeamStats(fx.away_team.id).then(setAwayStats);
-  }, [selectedId, fixtures, context]);
+    const key = `${selectedId}-${context.home_rest_days}-${context.away_rest_days}-${context.home_missing_key}-${context.away_missing_key}`;
+    if (key === lastPredKey.current) return;
+    lastPredKey.current = key;
+    setPrediction(null);
+    const t = setTimeout(() => {
+      getPrediction(selectedId, context).then(setPrediction);
+      getTeamStats(fx.home_team.id).then(setHomeStats);
+      getTeamStats(fx.away_team.id).then(setAwayStats);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [selectedId, fixtures, context, restReady]);
 
   const selected = fixtures.find((f) => f.id === selectedId);
   const finishedCount = fixturesForDate.filter((f) => f.status === "FINISHED").length;
@@ -139,7 +150,7 @@ export default function Home() {
 
       {selected && <WhatIfSimulator context={context} onChange={setContext} homeName={selected.home_team.name} awayName={selected.away_team.name} />}
       {prediction && <PredictionCard prediction={prediction} homeStats={homeStats} awayStats={awayStats} />}
-      {!prediction && selectedId && <p className="text-slate-400">Loading prediction...</p>}
+      {!prediction && selectedId && <p className="text-slate-400">Loading prediction... (first load after idle can take 20-30s on free Render, next loads are faster)</p>}
     </main>
   );
-    }
+}
