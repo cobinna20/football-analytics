@@ -1,12 +1,11 @@
 "use client";
 import { useEffect, useMemo, useState, useRef } from "react";
-import { getFixtures, getLeagues, type Fixture, type League } from "@/lib/api";
-import { getPrediction, getTeamStats, type Prediction, type TeamStats } from "@/lib/predict";
+import { getLeagues, type Fixture, type League } from "@/lib/api";
+import { getPrediction, type Prediction, type TeamStats } from "@/lib/predict";
 import PredictionCard from "@/components/PredictionCard";
 import WhatIfSimulator, { type SimContext } from "@/components/WhatIfSimulator";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://football-analytics-8khk.onrender.com";
-
 function fmtDate(d: Date) { return d.toISOString().slice(0, 10); }
 function dayLabel(iso: string) {
   const d = new Date(iso + "T12:00:00");
@@ -29,8 +28,9 @@ export default function Home() {
   const [awayStats, setAwayStats] = useState<TeamStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [context, setContext] = useState<SimContext>({ home_rest_days: 7, away_rest_days: 7, home_missing_key: 0, away_missing_key: 0 });
-  const [restReady, setRestReady] = useState(false);
-  const lastPredKey = useRef("");
+  const fixturesCache = useRef(new Map<string, { t: number; data: Fixture[] }>());
+  const bundleCache = useRef(new Map<string, any>());
+  const predCache = useRef(new Map<string, Prediction>());
 
   const dates = useMemo(() => {
     const arr: string[] = [];
@@ -39,14 +39,45 @@ export default function Home() {
     return arr;
   }, []);
 
+  // Keep Render awake while app is open
   useEffect(() => {
-    Promise.all([getFixtures("ALL"), getLeagues()]).then(([f, l]) => {
-      setFixtures(f); setLeagues(l); setLoading(false);
-      const todayF = f.filter((x) => x.date.slice(0, 10) === fmtDate(new Date()));
-      if (todayF.length > 0) setSelectedId(todayF[0].id);
-      else if (f.length > 0) { setSelectedId(f[0].id); setSelectedDate(f[0].date.slice(0, 10)); }
+    const ping = () => { fetch(`${API_BASE}/health`).catch(() => {}); };
+    ping();
+    const id = setInterval(ping, 240000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Load fixtures for one date, cached 5 min
+  const loadFixtures = async (dateStr: string) => {
+    const cached = fixturesCache.current.get(dateStr);
+    if (cached && Date.now() - cached.t < 300000) { setFixtures(cached.data); return cached.data; }
+    try {
+      const r = await fetch(`${API_BASE}/api/fixtures?date=${dateStr}`);
+      const data = await r.json();
+      fixturesCache.current.set(dateStr, { t: Date.now(), data });
+      setFixtures(data);
+      return data;
+    } catch { return []; }
+  };
+
+  useEffect(() => {
+    getLeagues().then(setLeagues).catch(() => {});
+    loadFixtures(fmtDate(new Date())).then((f) => {
+      setLoading(false);
+      if (f.length > 0) setSelectedId(f[0].id);
     });
   }, []);
+
+  useEffect(() => { loadFixtures(selectedDate); }, [selectedDate]);
+
+  // Prefetch tomorrow in background
+  useEffect(() => {
+    const d = new Date(selectedDate + "T12:00:00"); d.setDate(d.getDate() + 1);
+    const next = fmtDate(d);
+    if (!fixturesCache.current.has(next)) {
+      fetch(`${API_BASE}/api/fixtures?date=${next}`).then((r) => r.json()).then((data) => fixturesCache.current.set(next, { t: Date.now(), data })).catch(() => {});
+    }
+  }, [selectedDate]);
 
   const fixturesForDate = useMemo(() => fixtures.filter((f) => f.date.slice(0, 10) === selectedDate), [fixtures, selectedDate]);
   const leaguesForDate = useMemo(() => {
@@ -54,49 +85,52 @@ export default function Home() {
     fixturesForDate.forEach((f) => map.set(f.league_code || f.competition, f.league_name || f.league_code));
     return Array.from(map.entries()).map(([code, name]) => ({ code, name }));
   }, [fixturesForDate]);
-
   const visibleFixtures = useMemo(() => {
     if (selectedLeague === "ALL") return fixturesForDate;
     return fixturesForDate.filter((f) => (f.league_code || f.competition) === selectedLeague);
   }, [fixturesForDate, selectedLeague]);
 
-  // PHASE B FAST: Auto Rest - fetch once per fixture, then mark ready
+  // MAX SPEED: 1 bundle call = rest + prediction + players stats together
   useEffect(() => {
     if (!selectedId) return;
-    setRestReady(false);
     const fx = fixtures.find((x) => x.id === selectedId);
     if (!fx) return;
-    const homeId = fx.home_team.id;
-    const awayId = fx.away_team.id;
-    const fixtureDate = fx.date.slice(0, 10);
-    if (!homeId || !awayId || !fixtureDate) { setRestReady(true); return; }
-    fetch(`${API_BASE}/api/rest-both?home_team_id=${homeId}&away_team_id=${awayId}&fixture_date=${fixtureDate}`)
+    const cached = bundleCache.current.get(selectedId);
+    if (cached) {
+      setContext({ home_rest_days: cached.home_rest ?? 7, away_rest_days: cached.away_rest ?? 7, home_missing_key: 0, away_missing_key: 0 });
+      setPrediction(cached.prediction);
+      setHomeStats(cached.homeStats || cached.home_stats || null);
+      setAwayStats(cached.awayStats || cached.away_stats || null);
+      return;
+    }
+    setPrediction(null);
+    fetch(`${API_BASE}/api/match-bundle?fixture_id=${selectedId}`)
       .then((r) => r.json())
       .then((d) => {
-        if (typeof d.home_rest === "number" && typeof d.away_rest === "number") {
-          setContext((prev) => ({ ...prev, home_rest_days: d.home_rest, away_rest_days: d.away_rest, home_missing_key: 0, away_missing_key: 0 }));
+        if (d.prediction) {
+          bundleCache.current.set(selectedId, d);
+          setContext({ home_rest_days: d.home_rest ?? d.rest?.home_rest ?? 7, away_rest_days: d.away_rest ?? d.rest?.away_rest ?? 7, home_missing_key: 0, away_missing_key: 0 });
+          setPrediction(d.prediction);
+          setHomeStats(d.homeStats || d.home_stats || null);
+          setAwayStats(d.awayStats || d.away_stats || null);
         }
       })
-      .catch(() => {})
-      .finally(() => setRestReady(true));
+      .catch(() => {});
   }, [selectedId, fixtures]);
 
-  // FAST PREDICTION: Wait for Rest to be ready + 400ms debounce, cache same request
+  // What-If manual change only - debounced + cached, skip if same as bundle
   useEffect(() => {
-    if (!selectedId || !restReady) return;
-    const fx = fixtures.find((x) => x.id === selectedId);
-    if (!fx) return;
+    if (!selectedId) return;
+    const bundle = bundleCache.current.get(selectedId);
+    if (!bundle) return;
+    if (context.home_rest_days === (bundle.home_rest ?? bundle.rest?.home_rest) && context.away_rest_days === (bundle.away_rest ?? bundle.rest?.away_rest) && context.home_missing_key === 0 && context.away_missing_key === 0) return;
     const key = `${selectedId}-${context.home_rest_days}-${context.away_rest_days}-${context.home_missing_key}-${context.away_missing_key}`;
-    if (key === lastPredKey.current) return;
-    lastPredKey.current = key;
-    setPrediction(null);
+    if (predCache.current.has(key)) { setPrediction(predCache.current.get(key)!); return; }
     const t = setTimeout(() => {
-      getPrediction(selectedId, context).then(setPrediction);
-      getTeamStats(fx.home_team.id).then(setHomeStats);
-      getTeamStats(fx.away_team.id).then(setAwayStats);
+      getPrediction(selectedId, context).then((p) => { predCache.current.set(key, p); setPrediction(p); });
     }, 400);
     return () => clearTimeout(t);
-  }, [selectedId, fixtures, context, restReady]);
+  }, [context, selectedId]);
 
   const selected = fixtures.find((f) => f.id === selectedId);
   const finishedCount = fixturesForDate.filter((f) => f.status === "FINISHED").length;
@@ -108,7 +142,6 @@ export default function Home() {
         <h1 className="text-3xl md:text-4xl font-bold mt-2">Match Centre + Prediction</h1>
         <p className="text-slate-400 mt-1 text-sm">1. Pick a date. 2. Pick a league that has matches that day. 3. Pick a match. 4. See prediction below.</p>
       </header>
-
       <div>
         <p className="text-sm font-bold mb-2">📅 Date - 7 days ago to 7 days ahead</p>
         <div className="flex gap-2 overflow-x-auto pb-2">
@@ -119,7 +152,6 @@ export default function Home() {
           ))}
         </div>
       </div>
-
       <div>
         <p className="text-sm font-bold mb-2">🏆 Leagues with matches on {selectedDate} ({fixturesForDate.length} matches, {finishedCount} played)</p>
         <div className="flex gap-2 flex-wrap">
@@ -131,7 +163,6 @@ export default function Home() {
         </div>
         {fixturesForDate.length === 0 && <p className="text-slate-400 text-sm mt-2">No matches on this date. Try another date.</p>}
       </div>
-
       <div>
         <p className="text-sm font-bold mb-2">⚽ Matches - {selectedDate} {selectedLeague !== "ALL" ? `- ${leaguesForDate.find((l) => l.code === selectedLeague)?.name || selectedLeague}` : ""}</p>
         <div className="flex gap-2 flex-wrap">
@@ -144,13 +175,11 @@ export default function Home() {
         </div>
         {visibleFixtures.length === 0 && <p className="text-slate-400 text-sm">No matches for this league on this date.</p>}
       </div>
-
       {loading && <p className="text-slate-400">Loading fixtures...</p>}
       {!loading && fixtures.length === 0 && <p className="text-slate-400">No fixtures. Check backend.</p>}
-
       {selected && <WhatIfSimulator context={context} onChange={setContext} homeName={selected.home_team.name} awayName={selected.away_team.name} />}
       {prediction && <PredictionCard prediction={prediction} homeStats={homeStats} awayStats={awayStats} />}
       {!prediction && selectedId && <p className="text-slate-400">Loading prediction... (first load after idle can take 20-30s on free Render, next loads are faster)</p>}
     </main>
   );
-}
+    }
