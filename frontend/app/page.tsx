@@ -5,6 +5,8 @@ import { getPrediction, getTeamStats, type Prediction, type TeamStats } from "@/
 import PredictionCard from "@/components/PredictionCard";
 import WhatIfSimulator, { type SimContext } from "@/components/WhatIfSimulator";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://football-analytics-8khk.onrender.com";
+
 function fmtDate(d: Date) { return d.toISOString().slice(0, 10); }
 function dayLabel(iso: string) {
   const d = new Date(iso + "T12:00:00");
@@ -55,6 +57,25 @@ export default function Home() {
     if (selectedLeague === "ALL") return fixturesForDate;
     return fixturesForDate.filter((f) => (f.league_code || f.competition) === selectedLeague);
   }, [fixturesForDate, selectedLeague]);
+
+  // PHASE B: AUTO REST - when you tap a new match, fetch real rest from backend and auto-fill What-If
+  useEffect(() => {
+    if (!selectedId) return;
+    const fx = fixtures.find((x) => x.id === selectedId);
+    if (!fx) return;
+    const homeId = fx.home_team.id;
+    const awayId = fx.away_team.id;
+    const fixtureDate = fx.date.slice(0, 10);
+    if (!homeId || !awayId || !fixtureDate) return;
+    fetch(`${API_BASE}/api/rest-both?home_team_id=${homeId}&away_team_id=${awayId}&fixture_date=${fixtureDate}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (typeof d.home_rest === "number" && typeof d.away_rest === "number") {
+          setContext((prev) => ({ ...prev, home_rest_days: d.home_rest, away_rest_days: d.away_rest, home_missing_key: 0, away_missing_key: 0 }));
+        }
+      })
+      .catch(() => {});
+  }, [selectedId, fixtures]);
 
   useEffect(() => {
     if (!selectedId) return;
