@@ -36,6 +36,7 @@ LEAGUES = [
   {"code": "EC", "name": "European Championship"},
   {"code": "WC", "name": "World Cup"},
 ]
+WANTED = {l["code"] for l in LEAGUES}
 
 CACHE = {}
 def cache_get(key, ttl):
@@ -49,7 +50,7 @@ def cache_set(key, val):
 
 def fd_get(path, params=None):
     try:
-        r = requests.get(BASE + path, headers=HEADERS, params=params, timeout=8)
+        r = requests.get(BASE + path, headers=HEADERS, params=params, timeout=10)
         if r.status_code == 200:
             return r.json()
         return None
@@ -74,26 +75,40 @@ def map_match(m):
         "away_team": {"id": away.get("id"), "name": away.get("name", ""), "short_name": away.get("shortName") or away.get("tla") or away.get("name", "")},
     }
 
-def fetch_one_league(args):
-    code, date_str = args
-    data = fd_get(f"/competitions/{code}/matches", {"dateFrom": date_str, "dateTo": date_str})
-    if not data or "matches" not in data:
-        return []
-    return [map_match(m) for m in data["matches"]]
-
 def get_fixtures_for_date(date_str):
     key = f"fixtures:{date_str}"
     c = cache_get(key, 300)
     if c is not None:
         return c
-    with ThreadPoolExecutor(max_workers=12) as ex:
-        results = list(ex.map(fetch_one_league, [(l["code"], date_str) for l in LEAGUES]))
-    all_f = []
-    for lst in results:
-        all_f.extend(lst)
-    all_f.sort(key=lambda x: x["date"])
-    cache_set(key, all_f)
-    return all_f
+    # MAX SPEED: 1 call for ALL leagues, not 22 calls
+    data = fd_get("/matches", {"dateFrom": date_str, "dateTo": date_str})
+    if not data or "matches" not in data:
+        cache_set(key, [])
+        return []
+    matches = [m for m in data["matches"] if m.get("competition", {}).get("code") in WANTED]
+    if not matches:
+        matches = data["matches"]
+    result = [map_match(m) for m in matches]
+    result.sort(key=lambda x: x["date"])
+    cache_set(key, result)
+    return result
+
+def get_fixtures_for_range(start, end):
+    key = f"range:{start}:{end}"
+    c = cache_get(key, 300)
+    if c is not None:
+        return c
+    data = fd_get("/matches", {"dateFrom": start, "dateTo": end})
+    if not data or "matches" not in data:
+        cache_set(key, [])
+        return []
+    matches = [m for m in data["matches"] if m.get("competition", {}).get("code") in WANTED]
+    if not matches:
+        matches = data["matches"]
+    result = [map_match(m) for m in matches]
+    result.sort(key=lambda x: x["date"])
+    cache_set(key, result)
+    return result
 
 def get_team_info(team_id, fixture_date):
     key = f"team:{team_id}:{fixture_date}"
@@ -184,18 +199,12 @@ def leagues():
 
 @app.get("/api/fixtures")
 def fixtures(date: Optional[str] = None, league: Optional[str] = None):
-    # FIX: date is now OPTIONAL - works with OLD app (no date) and NEW app (with date)
     if date is None or date == "" or date == "ALL":
-        # Old app: return 15 days (-7 to +7) so it can filter by date
         from datetime import datetime, timedelta
         today = datetime.utcnow().date()
-        dates = [(today + timedelta(days=i)).isoformat() for i in range(-7, 8)]
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            results = list(ex.map(get_fixtures_for_date, dates))
-        all_f = []
-        for lst in results:
-            all_f.extend(lst)
-        all_f.sort(key=lambda x: x["date"])
+        start = (today + timedelta(days=-7)).isoformat()
+        end = (today + timedelta(days=7)).isoformat()
+        all_f = get_fixtures_for_range(start, end)
         if league and league != "ALL":
             all_f = [f for f in all_f if f["league_code"] == league]
         return all_f
