@@ -1,7 +1,4 @@
-# REAL DATA: Football-Data.org - 22 leagues, per-league (PROVEN method)
-# FIX: Reverted from /matches single-call (free plan only returns Brazil)
-# Back to /competitions/{code}/matches which worked for 8 leagues
-# + Cache so 22 leagues = 22 requests once, then 0 requests for 5 min
+# REAL DATA: Football-Data.org - 22 leagues, per-league + cache
 import os
 import asyncio
 import httpx
@@ -36,7 +33,6 @@ LEAGUES = {
     "SPL": "Saudi Pro League",
 }
 
-# Simple cache - 5 min
 _CACHE = {"data": None, "time": None, "range": ""}
 
 def default_range():
@@ -58,7 +54,6 @@ def _format_match(m, code):
     }
 
 async def _fetch_league(code: str, date_from: str, date_to: str):
-    # Retry once if 429 (rate limit)
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=15) as client:
@@ -85,23 +80,17 @@ async def get_fixtures_real(competition: str = "ALL", date_from: str | None = No
     if competition and competition != "ALL":
         res = await _fetch_league(competition, date_from, date_to)
         return res if res else None
-
-    # ALL - check cache first (same 14-day range, <5 min old = return cache)
     global _CACHE
     cache_key = f"{date_from}_{date_to}"
     now = datetime.now()
     if _CACHE["data"] is not None and _CACHE["range"] == cache_key and _CACHE["time"] is not None:
         if (now - _CACHE["time"]).total_seconds() < 300:
             return _CACHE["data"]
-
-    # Fetch one by one, small delay to stay under 10 req/min
     all_fixtures = []
     for code in LEAGUES.keys():
         res = await _fetch_league(code, date_from, date_to)
         all_fixtures.extend(res)
         await asyncio.sleep(0.6)
-
-    # Save to cache
     if all_fixtures:
         _CACHE = {"data": all_fixtures, "time": now, "range": cache_key}
         return all_fixtures
@@ -135,7 +124,7 @@ async def get_team_recent_goals_real(team_id: str):
     except Exception:
         return None
 
-# --- PHASE 8B: AUTO REST - Real rest days from last match ---
+# --- PHASE B: AUTO REST ---
 async def get_team_last_match_date(team_id: str):
     if not KEY:
         return None
