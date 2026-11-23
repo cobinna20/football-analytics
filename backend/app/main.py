@@ -183,11 +183,27 @@ def leagues():
     return LEAGUES
 
 @app.get("/api/fixtures")
-def fixtures(date: str = Query(...), league: Optional[str] = None):
-    all_f = get_fixtures_for_date(date)
-    if league and league != "ALL":
-        all_f = [f for f in all_f if f["league_code"] == league]
-    return all_f
+def fixtures(date: Optional[str] = None, league: Optional[str] = None):
+    # FIX: date is now OPTIONAL - works with OLD app (no date) and NEW app (with date)
+    if date is None or date == "" or date == "ALL":
+        # Old app: return 15 days (-7 to +7) so it can filter by date
+        from datetime import datetime, timedelta
+        today = datetime.utcnow().date()
+        dates = [(today + timedelta(days=i)).isoformat() for i in range(-7, 8)]
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            results = list(ex.map(get_fixtures_for_date, dates))
+        all_f = []
+        for lst in results:
+            all_f.extend(lst)
+        all_f.sort(key=lambda x: x["date"])
+        if league and league != "ALL":
+            all_f = [f for f in all_f if f["league_code"] == league]
+        return all_f
+    else:
+        all_f = get_fixtures_for_date(date)
+        if league and league != "ALL":
+            all_f = [f for f in all_f if f["league_code"] == league]
+        return all_f
 
 @app.get("/api/rest")
 def rest(team_id: int, fixture_date: Optional[str] = None, date: Optional[str] = None):
