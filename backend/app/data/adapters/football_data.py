@@ -1,10 +1,11 @@
-# REAL DATA: Football-Data.org - 22 leagues, date range, played + upcoming
-# FIX: Use single /matches call for ALL leagues (1 request, not 22)
-# so we stay under Football-Data 10 req/min limit
+# REAL DATA: Football-Data.org - 22 leagues, per-league (PROVEN method)
+# FIX: Reverted from /matches single-call (free plan only returns Brazil)
+# Back to /competitions/{code}/matches which worked for 8 leagues
+# + Cache so 22 leagues = 22 requests once, then 0 requests for 5 min
 import os
 import asyncio
 import httpx
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 BASE = "https://api.football-data.org/v4"
 KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")
@@ -35,6 +36,9 @@ LEAGUES = {
     "SPL": "Saudi Pro League",
 }
 
+# Simple cache - 5 min
+_CACHE = {"data": None, "time": None, "range": ""}
+
 def default_range():
     today = date.today()
     return (today - timedelta(days=7)).isoformat(), (today + timedelta(days=7)).isoformat()
@@ -54,18 +58,24 @@ def _format_match(m, code):
     }
 
 async def _fetch_league(code: str, date_from: str, date_to: str):
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(f"{BASE}/competitions/{code}/matches", params={"dateFrom": date_from, "dateTo": date_to}, headers=HEADERS)
-            if r.status_code != 200:
-                return []
-            data = r.json()
-            out = []
-            for m in data.get("matches", []):
-                out.append(_format_match(m, code))
-            return out
-    except Exception:
-        return []
+    # Retry once if 429 (rate limit)
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(f"{BASE}/competitions/{code}/matches", params={"dateFrom": date_from, "dateTo": date_to}, headers=HEADERS)
+                if r.status_code == 429:
+                    await asyncio.sleep(6)
+                    continue
+                if r.status_code != 200:
+                    return []
+                data = r.json()
+                out = []
+                for m in data.get("matches", []):
+                    out.append(_format_match(m, code))
+                return out
+        except Exception:
+            return []
+    return []
 
 async def get_fixtures_real(competition: str = "ALL", date_from: str | None = None, date_to: str | None = None):
     if not KEY:
@@ -76,31 +86,26 @@ async def get_fixtures_real(competition: str = "ALL", date_from: str | None = No
         res = await _fetch_league(competition, date_from, date_to)
         return res if res else None
 
-    # ALL leagues - try single /matches call first (1 request for all leagues)
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{BASE}/matches", params={"dateFrom": date_from, "dateTo": date_to}, headers=HEADERS)
-            if r.status_code == 200:
-                data = r.json()
-                out = []
-                for m in data.get("matches", []):
-                    comp = m.get("competition", {}).get("code", "")
-                    # Only keep leagues we want (22 leagues)
-                    if comp not in LEAGUES:
-                        continue
-                    out.append(_format_match(m, comp))
-                if out:
-                    return out
-    except Exception:
-        pass
+    # ALL - check cache first (same 14-day range, <5 min old = return cache)
+    global _CACHE
+    cache_key = f"{date_from}_{date_to}"
+    now = datetime.now()
+    if _CACHE["data"] is not None and _CACHE["range"] == cache_key and _CACHE["time"] is not None:
+        if (now - _CACHE["time"]).total_seconds() < 300:
+            return _CACHE["data"]
 
-    # Fallback - one by one if single call fails
+    # Fetch one by one, small delay to stay under 10 req/min
     all_fixtures = []
     for code in LEAGUES.keys():
         res = await _fetch_league(code, date_from, date_to)
         all_fixtures.extend(res)
-        await asyncio.sleep(0.3)
-    return all_fixtures if all_fixtures else None
+        await asyncio.sleep(0.6)
+
+    # Save to cache
+    if all_fixtures:
+        _CACHE = {"data": all_fixtures, "time": now, "range": cache_key}
+        return all_fixtures
+    return None
 
 async def get_teams_real():
     if not KEY:
@@ -129,3 +134,38 @@ async def get_team_recent_goals_real(team_id: str):
             return r.json().get("matches", [])
     except Exception:
         return None
+
+# --- PHASE 8B: AUTO REST - Real rest days from last match ---
+async def get_team_last_match_date(team_id: str):
+    if not KEY:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"{BASE}/teams/{team_id}/matches?status=FINISHED&limit=1", headers=HEADERS)
+            if r.status_code != 200:
+                return None
+            matches = r.json().get("matches", [])
+            if not matches:
+                return None
+            return matches[0].get("utcDate", None)
+    except Exception:
+        return None
+
+async def get_rest_days(team_id: str, fixture_date_str: str):
+    try:
+        last = await get_team_last_match_date(team_id)
+        if not last:
+            return 7
+        last_date = datetime.fromisoformat(last.replace("Z", "+00:00")).date()
+        if "T" in fixture_date_str:
+            fix_date = datetime.fromisoformat(fixture_date_str.replace("Z", "+00:00")).date()
+        else:
+            fix_date = date.fromisoformat(fixture_date_str)
+        diff = (fix_date - last_date).days
+        if diff < 1:
+            return 1
+        if diff > 10:
+            return 10
+        return diff
+    except Exception:
+        return 7
