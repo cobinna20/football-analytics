@@ -106,3 +106,16 @@ async def predict_fixture(
     except Exception:
         pass
     return result
+
+@app.get("/api/rest")
+async def get_rest(team_id: str, fixture_date: str):
+    from app.data.adapters.football_data import get_rest_days
+    days = await get_rest_days(team_id, fixture_date)
+    return {"team_id": team_id, "rest_days": days}
+
+@app.get("/api/rest-both")
+async def get_rest_both(home_team_id: str, away_team_id: str, fixture_date: str):
+    from app.data.adapters.football_data import get_rest_days
+    home = await get_rest_days(home_team_id, fixture_date)
+    away = await get_rest_days(away_team_id, fixture_date)
+    return {"home_rest": home, "away_rest": away, "fixture_date": fixture_date}
