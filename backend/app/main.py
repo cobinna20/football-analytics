@@ -86,7 +86,6 @@ def map_match(m):
 
 def fetch_one_league(args):
     code, date_str = args
-    # Small delay so we don't burst 22 calls at once
     time.sleep(0.2)
     data = fd_get(f"/competitions/{code}/matches", {"dateFrom": date_str, "dateTo": date_str})
     if not data or "matches" not in data:
@@ -98,7 +97,6 @@ def get_fixtures_for_date(date_str):
     c = cache_get(key, 3600)
     if c is not None:
         return c
-    # 5 workers only - stays under Football-Data limit
     with ThreadPoolExecutor(max_workers=5) as ex:
         results = list(ex.map(fetch_one_league, [(l["code"], date_str) for l in LEAGUES]))
     all_f = []
