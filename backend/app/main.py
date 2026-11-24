@@ -36,7 +36,6 @@ LEAGUES = [
   {"code": "EC", "name": "European Championship"},
   {"code": "WC", "name": "World Cup"},
 ]
-WANTED = {l["code"] for l in LEAGUES}
 
 CACHE = {}
 def cache_get(key, ttl):
@@ -45,17 +44,27 @@ def cache_get(key, ttl):
         if time.time() - t < ttl:
             return v
     return None
+def cache_get_stale(key):
+    if key in CACHE:
+        return CACHE[key][1]
+    return None
 def cache_set(key, val):
     CACHE[key] = (time.time(), val)
 
 def fd_get(path, params=None):
-    try:
-        r = requests.get(BASE + path, headers=HEADERS, params=params, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-        return None
-    except:
-        return None
+    for attempt in range(2):
+        try:
+            r = requests.get(BASE + path, headers=HEADERS, params=params, timeout=10)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 429:
+                time.sleep(6)
+                continue
+            return None
+        except:
+            time.sleep(2)
+            continue
+    return None
 
 def map_match(m):
     home = m.get("homeTeam", {})
@@ -75,40 +84,35 @@ def map_match(m):
         "away_team": {"id": away.get("id"), "name": away.get("name", ""), "short_name": away.get("shortName") or away.get("tla") or away.get("name", "")},
     }
 
+def fetch_one_league(args):
+    code, date_str = args
+    # Small delay so we don't burst 22 calls at once
+    time.sleep(0.2)
+    data = fd_get(f"/competitions/{code}/matches", {"dateFrom": date_str, "dateTo": date_str})
+    if not data or "matches" not in data:
+        return []
+    return [map_match(m) for m in data["matches"]]
+
 def get_fixtures_for_date(date_str):
     key = f"fixtures:{date_str}"
-    c = cache_get(key, 300)
+    c = cache_get(key, 3600)
     if c is not None:
         return c
-    # MAX SPEED: 1 call for ALL leagues, not 22 calls
-    data = fd_get("/matches", {"dateFrom": date_str, "dateTo": date_str})
-    if not data or "matches" not in data:
+    # 5 workers only - stays under Football-Data limit
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        results = list(ex.map(fetch_one_league, [(l["code"], date_str) for l in LEAGUES]))
+    all_f = []
+    for lst in results:
+        all_f.extend(lst)
+    all_f.sort(key=lambda x: x["date"])
+    if not all_f:
+        stale = cache_get_stale(key)
+        if stale:
+            return stale
         cache_set(key, [])
         return []
-    matches = [m for m in data["matches"] if m.get("competition", {}).get("code") in WANTED]
-    if not matches:
-        matches = data["matches"]
-    result = [map_match(m) for m in matches]
-    result.sort(key=lambda x: x["date"])
-    cache_set(key, result)
-    return result
-
-def get_fixtures_for_range(start, end):
-    key = f"range:{start}:{end}"
-    c = cache_get(key, 300)
-    if c is not None:
-        return c
-    data = fd_get("/matches", {"dateFrom": start, "dateTo": end})
-    if not data or "matches" not in data:
-        cache_set(key, [])
-        return []
-    matches = [m for m in data["matches"] if m.get("competition", {}).get("code") in WANTED]
-    if not matches:
-        matches = data["matches"]
-    result = [map_match(m) for m in matches]
-    result.sort(key=lambda x: x["date"])
-    cache_set(key, result)
-    return result
+    cache_set(key, all_f)
+    return all_f
 
 def get_team_info(team_id, fixture_date):
     key = f"team:{team_id}:{fixture_date}"
@@ -200,19 +204,12 @@ def leagues():
 @app.get("/api/fixtures")
 def fixtures(date: Optional[str] = None, league: Optional[str] = None):
     if date is None or date == "" or date == "ALL":
-        from datetime import datetime, timedelta
-        today = datetime.utcnow().date()
-        start = (today + timedelta(days=-7)).isoformat()
-        end = (today + timedelta(days=7)).isoformat()
-        all_f = get_fixtures_for_range(start, end)
-        if league and league != "ALL":
-            all_f = [f for f in all_f if f["league_code"] == league]
-        return all_f
-    else:
-        all_f = get_fixtures_for_date(date)
-        if league and league != "ALL":
-            all_f = [f for f in all_f if f["league_code"] == league]
-        return all_f
+        from datetime import datetime
+        date = datetime.utcnow().date().isoformat()
+    all_f = get_fixtures_for_date(date)
+    if league and league != "ALL":
+        all_f = [f for f in all_f if f["league_code"] == league]
+    return all_f
 
 @app.get("/api/rest")
 def rest(team_id: int, fixture_date: Optional[str] = None, date: Optional[str] = None):
@@ -264,5 +261,5 @@ def bundle(fixture_id: str):
 
 @app.get("/api/teams/{team_id}/stats")
 def team_stats(team_id: int, fixture_date: Optional[str] = None, date: Optional[str] = None):
-    fd = fixture_date or date or "2026-11-23"
+    fd = fixture_date or date or "2026-11-27"
     return get_team_info(team_id, fd)
