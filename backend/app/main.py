@@ -2,7 +2,7 @@ import os, time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import requests
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -12,27 +12,18 @@ FOOTBALL_DATA_KEY = os.getenv("FOOTBALL_DATA_API_KEY", "")
 BASE = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": FOOTBALL_DATA_KEY}
 
+# MAXIMUM FREE - 12 leagues only. Do not add a 13th.
 LEAGUES = [
-  {"code": "PL", "name": "Premier League"},
+  {"code": "PL", "name": "【entity-Premier League¦canonical_name=Premier League】"},
   {"code": "ELC", "name": "Championship"},
-  {"code": "EL1", "name": "League One"},
-  {"code": "PD", "name": "La Liga"},
-  {"code": "SD", "name": "La Liga 2"},
+  {"code": "PD", "name": "【entity-La Liga¦canonical_name=La Liga】"},
   {"code": "SA", "name": "Serie A"},
-  {"code": "SB", "name": "Serie B"},
   {"code": "BL1", "name": "Bundesliga"},
-  {"code": "BL2", "name": "2. Bundesliga"},
   {"code": "FL1", "name": "Ligue 1"},
-  {"code": "FL2", "name": "Ligue 2"},
   {"code": "DED", "name": "Eredivisie"},
   {"code": "PPL", "name": "Primeira Liga"},
   {"code": "BSA", "name": "Brasileirao"},
-  {"code": "CL", "name": "Champions League"},
-  {"code": "FAC", "name": "FA Cup"},
-  {"code": "DFB", "name": "DFB Pokal"},
-  {"code": "CDR", "name": "Copa del Rey"},
-  {"code": "CIT", "name": "Coppa Italia"},
-  {"code": "CLI", "name": "Copa Libertadores"},
+  {"code": "CL", "name": "【entity-Champions League¦canonical_name=Champions League】"},
   {"code": "EC", "name": "European Championship"},
   {"code": "WC", "name": "World Cup"},
 ]
@@ -44,27 +35,19 @@ def cache_get(key, ttl):
         if time.time() - t < ttl:
             return v
     return None
-def cache_get_stale(key):
-    if key in CACHE:
-        return CACHE[key][1]
-    return None
 def cache_set(key, val):
     CACHE[key] = (time.time(), val)
 
-def fd_get(path, params=None):
-    for attempt in range(2):
+def fd_get_debug(path, params=None):
+    try:
+        r = requests.get(BASE + path, headers=HEADERS, params=params, timeout=12)
         try:
-            r = requests.get(BASE + path, headers=HEADERS, params=params, timeout=10)
-            if r.status_code == 200:
-                return r.json()
-            if r.status_code == 429:
-                time.sleep(6)
-                continue
-            return None
+            data = r.json()
         except:
-            time.sleep(2)
-            continue
-    return None
+            data = {}
+        return r.status_code, data
+    except Exception as e:
+        return 0, {"error": str(e)}
 
 def map_match(m):
     home = m.get("homeTeam", {})
@@ -86,9 +69,9 @@ def map_match(m):
 
 def fetch_one_league(args):
     code, date_str = args
-    time.sleep(0.2)
-    data = fd_get(f"/competitions/{code}/matches", {"dateFrom": date_str, "dateTo": date_str})
-    if not data or "matches" not in data:
+    time.sleep(0.3)
+    status, data = fd_get_debug(f"/competitions/{code}/matches", {"dateFrom": date_str, "dateTo": date_str})
+    if status != 200 or not data or "matches" not in data:
         return []
     return [map_match(m) for m in data["matches"]]
 
@@ -97,19 +80,15 @@ def get_fixtures_for_date(date_str):
     c = cache_get(key, 3600)
     if c is not None:
         return c
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    # Maximum safe: 4 at a time, so 12 leagues = 3 batches, stays under 10 calls per minute
+    with ThreadPoolExecutor(max_workers=4) as ex:
         results = list(ex.map(fetch_one_league, [(l["code"], date_str) for l in LEAGUES]))
     all_f = []
     for lst in results:
         all_f.extend(lst)
     all_f.sort(key=lambda x: x["date"])
-    if not all_f:
-        stale = cache_get_stale(key)
-        if stale:
-            return stale
-        cache_set(key, [])
-        return []
-    cache_set(key, all_f)
+    if all_f:
+        cache_set(key, all_f)
     return all_f
 
 def get_team_info(team_id, fixture_date):
@@ -122,8 +101,8 @@ def get_team_info(team_id, fixture_date):
     goals_against_avg = 1.2
     form = []
     last_date = None
-    data = fd_get(f"/teams/{team_id}/matches", {"dateTo": fixture_date, "limit": 6, "status": "FINISHED"})
-    if data and "matches" in data and data["matches"]:
+    status, data = fd_get_debug(f"/teams/{team_id}/matches", {"dateTo": fixture_date, "limit": 6, "status": "FINISHED"})
+    if status == 200 and data and "matches" in data and data["matches"]:
         matches = data["matches"]
         last = matches[-1]
         last_date = last.get("utcDate", "")[:10]
@@ -199,6 +178,26 @@ def root():
 def leagues():
     return LEAGUES
 
+@app.get("/api/debug")
+def debug(date: Optional[str] = "2026-11-25"):
+    status, data = fd_get_debug("/competitions/PL/matches", {"dateFrom": date, "dateTo": date})
+    matches_count = 0
+    sample = ""
+    if status == 200 and data and "matches" in data:
+        matches_count = len(data["matches"])
+        if matches_count > 0:
+            first = data["matches"][0]
+            sample = f"{first.get('homeTeam', {}).get('name')} vs {first.get('awayTeam', {}).get('name')}"
+    return {
+        "date_tested": date,
+        "key_present": len(FOOTBALL_DATA_KEY) > 0,
+        "key_length": len(FOOTBALL_DATA_KEY),
+        "football_data_status": status,
+        "matches_count_PL_only": matches_count,
+        "sample_match": sample,
+        "football_data_error": data.get("message", "") if isinstance(data, dict) else "",
+    }
+
 @app.get("/api/fixtures")
 def fixtures(date: Optional[str] = None, league: Optional[str] = None):
     if date is None or date == "" or date == "ALL":
@@ -228,8 +227,8 @@ def predict(fixture_id: str, home_rest_days: int = 7, away_rest_days: int = 7, h
     c = cache_get(key, 600)
     if c is not None:
         return c
-    data = fd_get(f"/matches/{fixture_id}")
-    if not data:
+    status, data = fd_get_debug(f"/matches/{fixture_id}")
+    if status != 200 or not data:
         return {"error": "fixture not found"}
     fx = map_match(data)
     fdate = fx["date"][:10]
@@ -245,8 +244,8 @@ def bundle(fixture_id: str):
     c = cache_get(key, 600)
     if c is not None:
         return c
-    data = fd_get(f"/matches/{fixture_id}")
-    if not data:
+    status, data = fd_get_debug(f"/matches/{fixture_id}")
+    if status != 200 or not data:
         return {"error": "fixture not found"}
     fx = map_match(data)
     fdate = fx["date"][:10]
@@ -259,5 +258,5 @@ def bundle(fixture_id: str):
 
 @app.get("/api/teams/{team_id}/stats")
 def team_stats(team_id: int, fixture_date: Optional[str] = None, date: Optional[str] = None):
-    fd = fixture_date or date or "2026-11-27"
+    fd = fixture_date or date or "2026-11-25"
     return get_team_info(team_id, fd)
