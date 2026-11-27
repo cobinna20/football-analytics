@@ -1,5 +1,5 @@
-"use client";
 // @ts-nocheck
+"use client";
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 
 const API_BASE = "https://football-analytics-8khk.onrender.com";
@@ -8,7 +8,7 @@ function safeArray(v: any) {
   return Array.isArray(v) ? v : [];
 }
 
-function safeStr(v: any, f: any) {
+function safeStr(v: any, f?: any) {
   if (v === null || v === undefined) return f || "";
   try {
     return String(v);
@@ -17,7 +17,7 @@ function safeStr(v: any, f: any) {
   }
 }
 
-function safeNum(v: any, f: any) {
+function safeNum(v: any, f?: any) {
   const n = Number(v);
   return isNaN(n) ? (f || 0) : n;
 }
@@ -499,7 +499,7 @@ export default function Home() {
           marginBottom: 8,
         }}
       >
-        V3.6 - Favorites + Build Fixed
+        V3.7 - Favorites + Build Fixed
       </div>
 
       <h1
