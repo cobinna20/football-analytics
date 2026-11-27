@@ -1,4 +1,4 @@
-import os, time, threading
+import os, time, threading, math
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from datetime import datetime, timedelta
@@ -14,7 +14,7 @@ BASE = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": FOOTBALL_DATA_KEY}
 
 LEAGUES = [
-  {"code": "PL", "name": "Premier League"},
+  {"code": "【entity-PL¦canonical_name=PL】", "name": "【entity-Premier League¦canonical_name=Premier League】"},
   {"code": "ELC", "name": "Championship"},
   {"code": "PD", "name": "La Liga"},
   {"code": "SA", "name": "Serie A"},
@@ -38,7 +38,6 @@ def cache_get(k, ttl):
 def cache_set(k, v):
     CACHE[k] = (time.time(), v)
 
-# FINAL FIX: Global rate limiter. Max 8 calls per minute, so we never hit 429.
 RATE_LOCK = threading.Lock()
 LAST_CALLS = []
 def wait_for_rate_limit():
@@ -142,19 +141,52 @@ def get_team_info(team_id, fixture_date):
         cache_set(key, info)
     return info
 
-def compute_prediction(fixture, home_rest, away_rest, home_missing, away_missing, home_info, away_info):
+def poisson(k, lam):
+    try:
+        return math.exp(-lam) * (lam ** k) / math.factorial(k)
+    except:
+        return 0
+
+def compute_over_under(hg, ag):
+    # Accurate Poisson Over / Under from real predicted goals
+    over15 = 0; over25 = 0; over35 = 0; btts = 0
+    p_home_scores = 1 - poisson(0, hg)
+    p_away_scores = 1 - poisson(0, ag)
+    btts = p_home_scores * p_away_scores
+    for i in range(0, 11):
+        for j in range(0, 11):
+            p = poisson(i, hg) * poisson(j, ag)
+            total = i + j
+            if total >= 2:
+                over15 += p
+            if total >= 3:
+                over25 += p
+            if total >= 4:
+                over35 += p
+    over15 = max(0, min(1, over15)); over25 = max(0, min(1, over25)); over35 = max(0, min(1, over35))
+    return {
+        "over_15_prob": round(over15, 3), "under_15_prob": round(1 - over15, 3),
+        "over_25_prob": round(over25, 3), "under_25_prob": round(1 - over25, 3),
+        "over_35_prob": round(over35, 3), "under_35_prob": round(1 - over35, 3),
+        "btts_prob": round(btts, 3), "btts": round(btts, 3),
+        "over_under_pick": "Over 2.5" if over25 >= 0.55 else "Under 2.5" if over25 <= 0.45 else "No strong Over/Under",
+        "over_25": round(over25, 3), "under_25": round(1 - over25, 3),
+    }
+
+def compute_prediction(fixture, home_rest, away_rest, home_info, away_info):
+    # Missing Player REMOVED - no fake data. Only Rest + real Form + real Goals.
     hg = 1.45 + (home_info["goals_for_avg"] - 1.4) * 0.35 - (home_info["goals_against_avg"] - 1.2) * 0.15
     ag = 1.15 + (away_info["goals_for_avg"] - 1.4) * 0.35 - (away_info["goals_against_avg"] - 1.2) * 0.15
     if home_rest < 3: hg -= 0.25
     elif home_rest >= 7: hg += 0.08
     if away_rest < 3: ag -= 0.25
     elif away_rest >= 7: ag += 0.08
-    hg -= home_missing * 0.18; ag -= away_missing * 0.18
     hg = max(0.2, min(4.0, hg)); ag = max(0.2, min(4.0, ag))
     diff = hg - ag
     home_win = 0.38 + diff * 0.18; draw = 0.25 - abs(diff) * 0.04; away_win = 1 - home_win - draw
     home_win = max(0.05, min(0.85, home_win)); draw = max(0.08, min(0.4, draw)); away_win = max(0.05, min(0.85, away_win))
     total = home_win + draw + away_win; home_win /= total; draw /= total; away_win /= total
+    ou = compute_over_under(hg, ag)
     return {
         "fixture_id": fixture["id"], "home_team": fixture["home_team"], "away_team": fixture["away_team"],
         "home_win_prob": round(home_win, 3), "draw_prob": round(draw, 3), "away_win_prob": round(away_win, 3),
@@ -162,7 +194,8 @@ def compute_prediction(fixture, home_rest, away_rest, home_missing, away_missing
         "predicted_home_goals": round(hg, 2), "predicted_away_goals": round(ag, 2),
         "home_goals": round(hg, 2), "away_goals": round(ag, 2),
         "predicted_score": f"{round(hg)}-{round(ag)}", "confidence": round(max(home_win, draw, away_win), 3),
-        "explanation": f"Home {home_info['goals_for_avg']} goals avg, Away {away_info['goals_for_avg']} goals avg. Rest {home_rest} vs {away_rest} days. Missing {home_missing} vs {away_missing}. Form Home {','.join(home_info['form']) or 'N/A'} vs Away {','.join(away_info['form']) or 'N/A'}.",
+        "explanation": f"Home {home_info['goals_for_avg']} goals avg, Away {away_info['goals_for_avg']} goals avg. Rest {home_rest} vs {away_rest} days. Form Home {','.join(home_info['form']) or 'N/A'} vs Away {','.join(away_info['form']) or 'N/A'}.",
+        **ou,
     }
 
 @app.get("/health")
@@ -203,8 +236,8 @@ def rest_both(home_team_id: int, away_team_id: int, fixture_date: Optional[str] 
         h, a = list(ex.map(lambda tid: get_team_info(tid, fd), [home_team_id, away_team_id]))
     return {"home_rest": h["rest"], "away_rest": a["rest"], "home_last_match_date": h["last_match_date"], "away_last_match_date": a["last_match_date"]}
 @app.get("/api/fixtures/{fixture_id}/predict")
-def predict(fixture_id: str, home_rest_days: int = 7, away_rest_days: int = 7, home_missing_key: int = 0, away_missing_key: int = 0):
-    key = f"pred:{fixture_id}:{home_rest_days}:{away_rest_days}:{home_missing_key}:{away_missing_key}"
+def predict(fixture_id: str, home_rest_days: int = 7, away_rest_days: int = 7):
+    key = f"pred:{fixture_id}:{home_rest_days}:{away_rest_days}"
     c = cache_get(key, 600)
     if c is not None: return c
     status, data = fd_get(f"/matches/{fixture_id}")
@@ -212,7 +245,7 @@ def predict(fixture_id: str, home_rest_days: int = 7, away_rest_days: int = 7, h
     fx = map_match(data); fdate = fx["date"][:10]
     with ThreadPoolExecutor(max_workers=2) as ex:
         h, a = list(ex.map(lambda tid: get_team_info(tid, fdate), [fx["home_team"]["id"], fx["away_team"]["id"]]))
-    pred = compute_prediction(fx, home_rest_days, away_rest_days, home_missing_key, away_missing_key, h, a)
+    pred = compute_prediction(fx, home_rest_days, away_rest_days, h, a)
     cache_set(key, pred); return pred
 @app.get("/api/match-bundle")
 def bundle(fixture_id: str):
@@ -224,7 +257,7 @@ def bundle(fixture_id: str):
     fx = map_match(data); fdate = fx["date"][:10]
     with ThreadPoolExecutor(max_workers=2) as ex:
         h, a = list(ex.map(lambda tid: get_team_info(tid, fdate), [fx["home_team"]["id"], fx["away_team"]["id"]]))
-    pred = compute_prediction(fx, h["rest"], a["rest"], 0, 0, h, a)
+    pred = compute_prediction(fx, h["rest"], a["rest"], h, a)
     out = {"fixture": fx, "rest": {"home_rest": h["rest"], "away_rest": a["rest"]}, "home_rest": h["rest"], "away_rest": a["rest"], "prediction": pred, "homeStats": h, "awayStats": a, "home_stats": h, "away_stats": a, "is_default": h.get("is_default") and a.get("is_default")}
     if not out["is_default"]:
         cache_set(key, out)
