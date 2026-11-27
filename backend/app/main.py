@@ -14,7 +14,7 @@ BASE = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": FOOTBALL_DATA_KEY}
 
 LEAGUES = [
-  {"code": "【entity-PL¦canonical_name=PL】", "name": "【entity-Premier League¦canonical_name=Premier League】"},
+  {"code": "PL", "name": "Premier League"},
   {"code": "ELC", "name": "Championship"},
   {"code": "PD", "name": "La Liga"},
   {"code": "SA", "name": "Serie A"},
@@ -148,7 +148,6 @@ def poisson(k, lam):
         return 0
 
 def compute_over_under(hg, ag):
-    # Accurate Poisson Over / Under from real predicted goals
     over15 = 0; over25 = 0; over35 = 0; btts = 0
     p_home_scores = 1 - poisson(0, hg)
     p_away_scores = 1 - poisson(0, ag)
@@ -173,8 +172,42 @@ def compute_over_under(hg, ag):
         "over_25": round(over25, 3), "under_25": round(1 - over25, 3),
     }
 
+def pick_two_scores(home_xg, away_xg, home_win_p, draw_p, away_win_p):
+    if home_win_p >= draw_p and home_win_p >= away_win_p:
+        winner = "home"
+    elif draw_p >= home_win_p and draw_p >= away_win_p:
+        winner = "draw"
+    else:
+        winner = "away"
+    best_main = f"{round(home_xg)}-{round(away_xg)}"
+    best_main_prob = -1
+    best_main_dist = 9999
+    best_worst = "1-1"
+    best_worst_prob = -1
+    best_worst_dist = 9999
+    for h in range(0, 6):
+        for a in range(0, 6):
+            if h > a:
+                outcome = "home"
+            elif h == a:
+                outcome = "draw"
+            else:
+                outcome = "away"
+            prob = poisson(h, home_xg) * poisson(a, away_xg)
+            dist = abs(h - home_xg) + abs(a - away_xg)
+            if outcome == winner:
+                if prob > best_main_prob or (prob == best_main_prob and dist < best_main_dist):
+                    best_main_prob = prob
+                    best_main_dist = dist
+                    best_main = f"{h}-{a}"
+            if outcome != winner:
+                if prob > best_worst_prob or (prob == best_worst_prob and dist < best_worst_dist):
+                    best_worst_prob = prob
+                    best_worst_dist = dist
+                    best_worst = f"{h}-{a}"
+    return best_main, best_worst
+
 def compute_prediction(fixture, home_rest, away_rest, home_info, away_info):
-    # Missing Player REMOVED - no fake data. Only Rest + real Form + real Goals.
     hg = 1.45 + (home_info["goals_for_avg"] - 1.4) * 0.35 - (home_info["goals_against_avg"] - 1.2) * 0.15
     ag = 1.15 + (away_info["goals_for_avg"] - 1.4) * 0.35 - (away_info["goals_against_avg"] - 1.2) * 0.15
     if home_rest < 3: hg -= 0.25
@@ -187,14 +220,22 @@ def compute_prediction(fixture, home_rest, away_rest, home_info, away_info):
     home_win = max(0.05, min(0.85, home_win)); draw = max(0.08, min(0.4, draw)); away_win = max(0.05, min(0.85, away_win))
     total = home_win + draw + away_win; home_win /= total; draw /= total; away_win /= total
     ou = compute_over_under(hg, ag)
+    main_score, worst_score = pick_two_scores(hg, ag, home_win, draw, away_win)
     return {
         "fixture_id": fixture["id"], "home_team": fixture["home_team"], "away_team": fixture["away_team"],
         "home_win_prob": round(home_win, 3), "draw_prob": round(draw, 3), "away_win_prob": round(away_win, 3),
         "home_win": round(home_win, 3), "draw": round(draw, 3), "away_win": round(away_win, 3),
         "predicted_home_goals": round(hg, 2), "predicted_away_goals": round(ag, 2),
         "home_goals": round(hg, 2), "away_goals": round(ag, 2),
-        "predicted_score": f"{round(hg)}-{round(ag)}", "confidence": round(max(home_win, draw, away_win), 3),
+        "predicted_score": main_score,
+        "main_score": main_score,
+        "most_likely_score": main_score,
+        "worst_score": worst_score,
+        "worst_scenario_score": worst_score,
+        "cover_score": worst_score,
+        "confidence": round(max(home_win, draw, away_win), 3),
         "explanation": f"Home {home_info['goals_for_avg']} goals avg, Away {away_info['goals_for_avg']} goals avg. Rest {home_rest} vs {away_rest} days. Form Home {','.join(home_info['form']) or 'N/A'} vs Away {','.join(away_info['form']) or 'N/A'}.",
+        "two_score_explanation": f"Most Likely {main_score}, Worst Scenario / Cover {worst_score}.",
         **ou,
     }
 
