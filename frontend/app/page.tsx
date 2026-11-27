@@ -51,6 +51,29 @@ function makeDates() {
   return out;
 }
 
+function getWorstScore(pred) {
+  try {
+    const s = safeStr(pred?.predicted_score, "");
+    if (!s || !s.includes("-")) return "-";
+    const parts = s.split("-");
+    let h = parseInt(parts[0], 10);
+    let a = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(a)) return "-";
+    if (h > a) {
+      h = h - 1;
+    } else if (a > h) {
+      a = a - 1;
+    } else {
+      a = a + 1;
+    }
+    if (h < 0) h = 0;
+    if (a < 0) a = 0;
+    return h + "-" + a;
+  } catch {
+    return "-";
+  }
+}
+
 export default function Home() {
   const dates = useMemo(() => makeDates(), []);
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -283,6 +306,10 @@ export default function Home() {
     return filteredByLeague.filter((f) => fp.includes(safeStr(f?.id)));
   }, [filteredByLeague, filterActive, filterPassed]);
 
+  const played = useMemo(() => {
+    return safeArray(fixtures).filter((f) => f?.status === "FINISHED").length;
+  }, [fixtures]);
+
   const handleTap = (f) => {
     if (loadingPred || filtering) return;
     try {
@@ -443,6 +470,12 @@ export default function Home() {
       ? "Under 2.5"
       : "Home or Away Win";
 
+  const worstScore = getWorstScore(prediction);
+  const pickText = safeStr(
+    prediction?.over_under_pick,
+    safeNum(prediction?.over_25_prob, 0) >= 0.5 ? "Over 2.5" : "Under 2.5"
+  );
+
   return (
     <div
       style={{
@@ -465,7 +498,7 @@ export default function Home() {
           marginBottom: 8,
         }}
       >
-        V3.4 - Favorites + Instant Revisit
+        V3.5 - Favorites + Worst Scenario Kept
       </div>
 
       <h1
@@ -480,7 +513,8 @@ export default function Home() {
       </h1>
 
       <p style={{ color: "#94a3b8", fontSize: 14, marginBottom: 16 }}>
-        1. Pick a date. 2. Pick a league. 3. Use Filter or tap a match.
+        1. Pick a date. 2. Pick a league. 3. Use Filter or tap a match. 4.
+        See real analysis.
       </p>
 
       <div
@@ -501,7 +535,8 @@ export default function Home() {
         </div>
         {safeArray(favorites).length === 0 && (
           <div style={{ fontSize: 13, marginTop: 8 }}>
-            No favorites yet. Tap a match, then tap Add to Favorites.
+            No favorites yet. Tap a match, then tap Add to Favorites below
+            the match name.
           </div>
         )}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
@@ -600,7 +635,8 @@ export default function Home() {
       </div>
 
       <div style={{ fontWeight: 700, marginTop: 16, marginBottom: 8 }}>
-        Leagues on {selectedDate} ({safeArray(fixtures).length} matches)
+        Leagues with matches on {selectedDate} ({safeArray(fixtures).length}{" "}
+        matches, {played} played)
       </div>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -658,7 +694,8 @@ export default function Home() {
         </div>
         <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>
           Filter this date + league by Home Win, Draw, Away Win, Over 2.5 or
-          Under 2.5. Checks one by one slowly so it does not hit the limit.
+          Under 2.5. It checks one by one slowly so it does not hit the
+          limit.
         </div>
         <div
           style={{
@@ -896,7 +933,8 @@ export default function Home() {
                 fontSize: 13,
               }}
             >
-              Real analysis loaded.
+              Real analysis loaded. Form and goals are different for each
+              team.
             </div>
           )}
 
@@ -943,7 +981,8 @@ export default function Home() {
             What-If - Rest Only
           </div>
           <div style={{ color: "#94a3b8", fontSize: 12 }}>
-            Rest is AUTO from real last match. Missing Player removed.
+            Rest is AUTO from real last match. Missing Player removed - no
+            free API has real 2026 injuries.
           </div>
 
           <div
@@ -1005,7 +1044,20 @@ export default function Home() {
               <div
                 style={{ fontSize: 20, fontWeight: 800, marginTop: 8 }}
               >
-                Predicted Score: {safeStr(prediction?.predicted_score, "-")}
+                Most Likely Score: {safeStr(prediction?.predicted_score, "-")}
+              </div>
+              <div
+                style={{
+                  fontSize: 18,
+                  fontWeight: 800,
+                  marginTop: 6,
+                  color: "#fbbf24",
+                }}
+              >
+                Worst Scenario / Cover: {worstScore}
+              </div>
+              <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4 }}>
+                Play Main, cover Worst for safety.
               </div>
 
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -1057,7 +1109,7 @@ export default function Home() {
               </div>
 
               <div style={{ fontWeight: 700, marginTop: 16 }}>
-                Over / Under Analysis
+                Over / Under Analysis - Poisson from real goals
               </div>
 
               <div
@@ -1145,23 +1197,16 @@ export default function Home() {
                 </div>
               </div>
 
-              <div
-                style={{
-                  background: "#dcfce7",
-                  color: "#166534",
-                  borderRadius: 12,
-                  padding: 10,
-                  marginTop: 10,
-                  fontWeight: 700,
-                  fontSize: 13,
-                }}
-              >
-                Over / Under Pick:{" "}
-                {safeStr(prediction?.over_under_pick, "No strong pick")}
+              <div style={{ fontWeight: 700, marginTop: 12 }}>
+                Pick: {pickText}
               </div>
 
-              <div style={{ color: "#cbd5e1", fontSize: 13, marginTop: 10 }}>
+              <div style={{ color: "#cbd5e1", fontSize: 13, marginTop: 8 }}>
                 {safeStr(prediction?.explanation, "")}
+              </div>
+              <div style={{ color: "#cbd5e1", fontSize: 13, marginTop: 6 }}>
+                Most Likely {safeStr(prediction?.predicted_score, "-")}, Worst
+                Scenario / Cover {worstScore}.
               </div>
             </div>
           )}
