@@ -20,7 +20,6 @@ export default function Home() {
   const [loadingPred, setLoadingPred] = useState(false);
   const [homeRest, setHomeRest] = useState(7); const [awayRest, setAwayRest] = useState(7);
   const [errorMsg, setErrorMsg] = useState("");
-  // FILTER STATE - does not fetch all at once, checks one by one slowly
   const [filterType, setFilterType] = useState<string>("home");
   const [filterMin, setFilterMin] = useState(50);
   const [filterActive, setFilterActive] = useState(false);
@@ -67,7 +66,6 @@ export default function Home() {
     try { const res = await fetch(`${API_BASE}/api/fixtures/${selectedFixtureId}/predict?home_rest_days=${homeRest}&away_rest_days=${awayRest}`, { cache: "no-store" }); if (!res.ok) return; const data = await res.json().catch(() => null); if (data && !data.error) setPrediction(data); } catch {} finally { setLoadingPred(false); }
   }, [selectedFixtureId, homeRest, awayRest, loadingPred, filtering]);
   const filteredByLeague = useMemo(() => { const arr = safeArray(fixtures); if (selectedLeague === "ALL") return arr; return arr.filter((f: any) => safeStr(f?.league_code || f?.competition) === selectedLeague); }, [fixtures, selectedLeague]);
-  // Apply probability filter on top of league filter
   const filtered = useMemo(() => {
     if (!filterActive || !filterPassed) return filteredByLeague;
     return filteredByLeague.filter((f: any) => filterPassed.includes(safeStr(f?.id)));
@@ -123,7 +121,6 @@ export default function Home() {
         <button onClick={() => { setSelectedLeague("ALL"); clearFilter(); }} style={{ background: selectedLeague === "ALL" ? "#10b981" : "#1e293b", color: "white", border: "none", borderRadius: 20, padding: "10px 16px", cursor: "pointer" }}>All leagues ({safeArray(fixtures).length})</button>
         {safeArray(leagues).map((l: any) => { const code = safeStr(l?.code); const name = safeStr(l?.name, code); return (<button key={code} onClick={() => { setSelectedLeague(code); clearFilter(); }} style={{ background: selectedLeague === code ? "#10b981" : "#1e293b", color: "white", border: "none", borderRadius: 20, padding: "10px 16px", cursor: "pointer" }}>{name} ({safeNum(l?.count, 0)})</button>); })}
       </div>
-
       <div style={{ background: "#1e293b", borderRadius: 16, padding: 16, marginTop: 16 }}>
         <div style={{ fontWeight: 700, fontSize: 16 }}>🔍 Filter by Probability</div>
         <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>Filter this date + league by Home Win, Draw, Away Win, Over 2.5 or Under 2.5. It checks one by one slowly so it does not hit the limit.</div>
@@ -141,7 +138,6 @@ export default function Home() {
         {filterActive && !filtering && <div style={{ color: "#dcfce7", marginTop: 10, fontWeight: 700 }}>✅ Filter: {filterLabel} &gt;= {filterMin}% - {filterCount} of {safeArray(filteredByLeague).length} matches pass. Tap a match below to see its real analysis.</div>}
         {filterActive && filterCount === 0 && !filtering && <div style={{ color: "#fbbf24", marginTop: 6 }}>No matches pass this filter on this date + league. Try lower % or Clear Filter.</div>}
       </div>
-
       {safeArray(fixtures).length === 0 && !loadingFixtures && <div style={{ color: "#94a3b8", marginTop: 12 }}>{errorMsg || "No matches on this date. Try another date."}</div>}
       {loadingFixtures && <div style={{ color: "#94a3b8", marginTop: 12 }}>Loading fixtures...</div>}
       <div style={{ fontWeight: 700, marginTop: 20, marginBottom: 8 }}>⚽ Matches - {selectedDate} {filterActive ? `(Filtered: ${filterCount} pass)` : ""} {(loadingPred || filtering) ? "(Loading... do not tap another)" : ""}</div>
@@ -172,7 +168,9 @@ export default function Home() {
           {!loadingPred && !prediction && <div style={{ color: "#94a3b8" }}>No prediction yet. Tap Recalculate.</div>}
           {!loadingPred && prediction && (
             <div>
-              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 8 }}>Predicted Score: {safeStr(prediction?.predicted_score, "-")}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, marginTop: 8 }}>Most Likely Score: {safeStr(prediction?.main_score || prediction?.most_likely_score || prediction?.predicted_score, "-")}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, marginTop: 6, color: "#fbbf24" }}>Worst Scenario / Cover: {safeStr(prediction?.worst_score || prediction?.worst_scenario_score || prediction?.cover_score, "-")}</div>
+              <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>Play Main, cover Worst for safety.</div>
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>Home Win<br /><b>{(safeNum(prediction?.home_win_prob ?? prediction?.home_win, 0) * 100).toFixed(1)}%</b></div>
                 <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>Draw<br /><b>{(safeNum(prediction?.draw_prob ?? prediction?.draw, 0) * 100).toFixed(1)}%</b></div>
@@ -185,8 +183,9 @@ export default function Home() {
                 <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>Over 3.5<br /><b>{(safeNum(prediction?.over_35_prob, 0) * 100).toFixed(1)}%</b><br /><span style={{ fontSize: 11, color: "#94a3b8" }}>Under 3.5 {(safeNum(prediction?.under_35_prob, 0) * 100).toFixed(1)}%</span></div>
                 <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>BTTS<br /><b>{(safeNum(prediction?.btts_prob ?? prediction?.btts, 0) * 100).toFixed(1)}%</b></div>
               </div>
-              <div style={{ background: "#dcfce7", color: "#166534", borderRadius: 12, padding: 10, marginTop: 10, fontWeight: 700, fontSize: 13 }}>Over / Under Pick: {safeStr(prediction?.over_under_pick, "No strong Over/Under")}</div>
-              <div style={{ color: "#cbd5e1", fontSize: 13, marginTop: 10 }}>{safeStr(prediction?.explanation, "")}</div>
+              <div style={{ marginTop: 12, fontWeight: 700 }}>Pick: {safeStr(prediction?.over_under_pick, "-")}</div>
+              <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 8 }}>{safeStr(prediction?.explanation, "")}</div>
+              {prediction?.two_score_explanation && <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 4 }}>{safeStr(prediction?.two_score_explanation, "")}</div>}
             </div>
           )}
         </div>
