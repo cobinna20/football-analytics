@@ -38,6 +38,15 @@ function formatTime(s: any) {
   }
 }
 
+function formatDateShort(s: any) {
+  try {
+    if (!s) return "";
+    return safeStr(s, "").slice(0, 10);
+  } catch {
+    return "";
+  }
+}
+
 function makeDates() {
   const out: any = [];
   try {
@@ -105,7 +114,16 @@ export default function Home() {
   const [favorites, setFavorites] = useState<any>([]);
   const [pendingFavId, setPendingFavId] = useState<any>(null);
   const [fromCache, setFromCache] = useState(false);
+  // NEW ONLY - H2H + Table, nothing else changed
+  const [h2h, setH2h] = useState<any>(null);
+  const [tableData, setTableData] = useState<any>(null);
+  const [loadingH2h, setLoadingH2h] = useState(false);
+  const [loadingTable, setLoadingTable] = useState(false);
+  const [h2hError, setH2hError] = useState("");
+  const [tableError, setTableError] = useState("");
   const predictionsCache = useRef<any>({});
+  const h2hCache = useRef<any>({});
+  const tableCache = useRef<any>({});
 
   useEffect(() => {
     try {
@@ -193,6 +211,10 @@ export default function Home() {
     setSelectedFixtureId(null);
     setBundle(null);
     setPrediction(null);
+    setH2h(null);
+    setTableData(null);
+    setH2hError("");
+    setTableError("");
     setHomeRest(7);
     setAwayRest(7);
     setErrorMsg("");
@@ -203,6 +225,82 @@ export default function Home() {
     if (selectedDate) loadFixtures(selectedDate);
   }, [selectedDate, loadFixtures]);
 
+  // NEW ONLY - Separate from loadBundle, so it cannot break loadBundle
+  const loadH2h = useCallback(async (fixtureId: any) => {
+    if (!fixtureId) return;
+    if (h2hCache.current[fixtureId]) {
+      setH2h(h2hCache.current[fixtureId]);
+      return;
+    }
+    setLoadingH2h(true);
+    setH2hError("");
+    try {
+      const res = await fetch(API_BASE + "/api/h2h?fixture_id=" + fixtureId, { cache: "no-store" });
+      if (!res.ok) {
+        setH2h(null);
+        setH2hError("Backend H2H update is next. Paste this frontend, say Done, I will give backend file.");
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      if (!data || data.error) {
+        setH2h(null);
+        setH2hError("No H2H data for this pair yet.");
+        return;
+      }
+      h2hCache.current[fixtureId] = data;
+      setH2h(data);
+    } catch {
+      setH2h(null);
+      setH2hError("Backend H2H update is next. Paste this frontend, say Done, I will give backend file.");
+    } finally {
+      setLoadingH2h(false);
+    }
+  }, []);
+
+  const loadTable = useCallback(async (fixtureObj: any) => {
+    if (!fixtureObj) return;
+    const leagueCode = safeStr(fixtureObj?.league_code || fixtureObj?.competition, "");
+    const cacheKey = leagueCode || safeStr(fixtureObj?.league_name, "");
+    if (tableCache.current[cacheKey]) {
+      setTableData(tableCache.current[cacheKey]);
+      return;
+    }
+    setLoadingTable(true);
+    setTableError("");
+    try {
+      const res = await fetch(
+        API_BASE + "/api/standings?league_code=" + encodeURIComponent(leagueCode) + "&league_name=" + encodeURIComponent(safeStr(fixtureObj?.league_name, "")),
+        { cache: "no-store" }
+      );
+      if (!res.ok) {
+        setTableData(null);
+        setTableError("Backend Table update is next. Paste this frontend, say Done, I will give backend file.");
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      if (!data || data.error) {
+        setTableData(null);
+        setTableError("No table data for this league yet.");
+        return;
+      }
+      tableCache.current[cacheKey] = data;
+      setTableData(data);
+    } catch {
+      setTableData(null);
+      setTableError("Backend Table update is next. Paste this frontend, say Done, I will give backend file.");
+    } finally {
+      setLoadingTable(false);
+    }
+  }, []);
+
+  // NEW ONLY - When a match is picked, load H2H + Table separately. Does not touch loadBundle logic.
+  useEffect(() => {
+    if (!selectedFixtureId || !selectedFixture) return;
+    loadH2h(selectedFixtureId);
+    loadTable(selectedFixture);
+  }, [selectedFixtureId, selectedFixture, loadH2h, loadTable]);
+
+  // EXACTLY YOUR V3.7 loadBundle - not changed except clearing H2H/Table at start
   const loadBundle = useCallback(
     async (fixtureId: any) => {
       if (loadingPred || filtering) return;
@@ -215,6 +313,8 @@ export default function Home() {
           const cached = predictionsCache.current[fixtureId];
           setBundle(cached);
           setPrediction(cached.prediction || null);
+          if (cached.h2h) setH2h(cached.h2h);
+          if (cached.table || cached.standings) setTableData(cached.table || cached.standings);
           const r = cached.rest || {};
           setHomeRest(safeNum(r.home_rest, 7));
           setAwayRest(safeNum(r.away_rest, 7));
@@ -226,6 +326,8 @@ export default function Home() {
           predictionsCache.current[fixtureId] = saved;
           setBundle(saved);
           setPrediction(saved.prediction || null);
+          if (saved.h2h) setH2h(saved.h2h);
+          if (saved.table || saved.standings) setTableData(saved.table || saved.standings);
           const r = saved.rest || {};
           setHomeRest(safeNum(r.home_rest, 7));
           setAwayRest(safeNum(r.away_rest, 7));
@@ -243,6 +345,8 @@ export default function Home() {
         setCachedBundle(fixtureId, data);
         setBundle(data);
         setPrediction(data.prediction || null);
+        if (data.h2h) setH2h(data.h2h);
+        if (data.table || data.standings) setTableData(data.table || data.standings);
         const r = data.rest || {};
         setHomeRest(safeNum(r.home_rest, 7));
         setAwayRest(safeNum(r.away_rest, 7));
@@ -266,6 +370,8 @@ export default function Home() {
       setSelectedFixtureId(id);
       setBundle(null);
       setPrediction(null);
+      setH2h(null);
+      setTableData(null);
       setPendingFavId(null);
       loadBundle(id);
     }
@@ -319,6 +425,8 @@ export default function Home() {
       setSelectedFixtureId(id);
       setBundle(null);
       setPrediction(null);
+      setH2h(null);
+      setTableData(null);
       loadBundle(id);
     } catch {}
   };
@@ -364,6 +472,8 @@ export default function Home() {
       setSelectedFixtureId(fid);
       setBundle(null);
       setPrediction(null);
+      setH2h(null);
+      setTableData(null);
       loadBundle(fid);
     }
   };
@@ -477,6 +587,30 @@ export default function Home() {
     safeNum(prediction?.over_25_prob, 0) >= 0.5 ? "Over 2.5" : "Under 2.5"
   );
 
+  // H2H + Table helpers - NEW ONLY
+  const h2hMeetings = safeArray(h2h?.meetings || h2h?.games || h2h?.results);
+  const h2hTotal = safeNum(h2h?.total || h2h?.total_meetings || h2hMeetings.length, h2hMeetings.length);
+  const h2hHomeWins = safeNum(h2h?.home_wins || h2h?.homeWins || 0, 0);
+  const h2hDraws = safeNum(h2h?.draws || 0, 0);
+  const h2hAwayWins = safeNum(h2h?.away_wins || h2h?.awayWins || 0, 0);
+  const h2hHomeGoals = safeNum(h2h?.home_goals || h2h?.homeGoals || 0, 0);
+  const h2hAwayGoals = safeNum(h2h?.away_goals || h2h?.awayGoals || 0, 0);
+  const h2hBtts = safeNum(h2h?.btts || h2h?.btts_count || 0, 0);
+  const h2hOver25 = safeNum(h2h?.over25 || h2h?.over_25 || h2h?.over_25_count || 0, 0);
+  const standingsList = safeArray(tableData?.standings || tableData?.table || tableData?.positions);
+  const homeTeamName = selectedFixture ? getTeamName(selectedFixture?.home_team) : "";
+  const awayTeamName = selectedFixture ? getTeamName(selectedFixture?.away_team) : "";
+  const findTeamRow = (name: any) => {
+    const n = safeStr(name, "").toLowerCase();
+    return standingsList.find((r: any) => safeStr(r?.team || r?.team_name || r?.name, "").toLowerCase() === n || safeStr(r?.team || r?.team_name || r?.name, "").toLowerCase().includes(n.slice(0, 6)));
+  };
+  const homeRow = tableData?.home || tableData?.home_team || findTeamRow(homeTeamName) || null;
+  const awayRow = tableData?.away || tableData?.away_team || findTeamRow(awayTeamName) || null;
+  const homePos = safeNum(homeRow?.position || homeRow?.pos || homeRow?.rank, 0);
+  const awayPos = safeNum(awayRow?.position || awayRow?.pos || awayRow?.rank, 0);
+  const homePts = safeNum(homeRow?.points || homeRow?.pts, 0);
+  const awayPts = safeNum(awayRow?.points || awayRow?.pts, 0);
+
   return (
     <div
       style={{
@@ -499,7 +633,7 @@ export default function Home() {
           marginBottom: 8,
         }}
       >
-        V3.7 - Favorites + Build Fixed
+        V3.8 - H2H + Table Position
       </div>
 
       <h1
@@ -515,7 +649,7 @@ export default function Home() {
 
       <p style={{ color: "#94a3b8", fontSize: 14, marginBottom: 16 }}>
         1. Pick a date. 2. Pick a league. 3. Use Filter or tap a match. 4.
-        See real analysis.
+        See Table, H2H, and real analysis.
       </p>
 
       <div
@@ -978,7 +1112,131 @@ export default function Home() {
             </div>
           )}
 
-          <div style={{ fontWeight: 700, marginTop: 16 }}>
+          <div style={{ fontWeight: 800, fontSize: 17, marginTop: 20 }}>
+            Table Position - {safeStr(selectedFixture?.league_name)}
+          </div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 2 }}>
+            Where both teams sit in the league right now.
+          </div>
+          {loadingTable && (
+            <div style={{ color: "#fbbf24", marginTop: 8, fontWeight: 700 }}>
+              Loading table position...
+            </div>
+          )}
+          {!loadingTable && tableError && (
+            <div style={{ background: "#fef3c7", color: "#92400e", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 13 }}>
+              {tableError}
+            </div>
+          )}
+          {!loadingTable && !tableError && tableData && (
+            <div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 12, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{homeTeamName}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4 }}>{homePos ? "#" + homePos : "-"}</div>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>{homePts} pts</div>
+                  <div style={{ fontSize: 12, color: "#cbd5e1", marginTop: 4 }}>
+                    P: {safeNum(homeRow?.played || homeRow?.games || homeRow?.p, 0)} | W: {safeNum(homeRow?.won || homeRow?.w, 0)} D: {safeNum(homeRow?.drawn || homeRow?.d, 0)} L: {safeNum(homeRow?.lost || homeRow?.l, 0)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#cbd5e1" }}>
+                    GF: {safeNum(homeRow?.gf || homeRow?.goals_for || homeRow?.goalsFor, 0)} GA: {safeNum(homeRow?.ga || homeRow?.goals_against || homeRow?.goalsAgainst, 0)} GD: {safeNum(homeRow?.gd || homeRow?.goal_diff, 0)}
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>Form: {safeStr(homeRow?.form, safeArray(homeStats?.form).join(" ") || "-")}</div>
+                </div>
+                <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 12, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{awayTeamName}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4 }}>{awayPos ? "#" + awayPos : "-"}</div>
+                  <div style={{ fontSize: 12, marginTop: 2 }}>{awayPts} pts</div>
+                  <div style={{ fontSize: 12, color: "#cbd5e1", marginTop: 4 }}>
+                    P: {safeNum(awayRow?.played || awayRow?.games || awayRow?.p, 0)} | W: {safeNum(awayRow?.won || awayRow?.w, 0)} D: {safeNum(awayRow?.drawn || awayRow?.d, 0)} L: {safeNum(awayRow?.lost || awayRow?.l, 0)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#cbd5e1" }}>
+                    GF: {safeNum(awayRow?.gf || awayRow?.goals_for || awayRow?.goalsFor, 0)} GA: {safeNum(awayRow?.ga || awayRow?.goals_against || awayRow?.goalsAgainst, 0)} GD: {safeNum(awayRow?.gd || awayRow?.goal_diff, 0)}
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>Form: {safeStr(awayRow?.form, safeArray(awayStats?.form).join(" ") || "-")}</div>
+                </div>
+              </div>
+              {homePos && awayPos && (
+                <div style={{ background: "#0f172a", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 13, textAlign: "center" }}>
+                  {homePos < awayPos ? homeTeamName + " is " + (awayPos - homePos) + " places above " + awayTeamName + " (" + homePts + " pts vs " + awayPts + " pts)." : awayPos < homePos ? awayTeamName + " is " + (homePos - awayPos) + " places above " + homeTeamName + " (" + awayPts + " pts vs " + homePts + " pts)." : "Both teams are level on position."}
+                </div>
+              )}
+              {standingsList.length > 0 && (
+                <div style={{ background: "#0f172a", borderRadius: 12, padding: 10, marginTop: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Mini Table - Top 6 + Both Teams</div>
+                  {standingsList.slice(0, 6).map((r: any, idx: number) => {
+                    const tName = safeStr(r?.team || r?.team_name || r?.name, "");
+                    const isHome = tName.toLowerCase() === homeTeamName.toLowerCase();
+                    const isAway = tName.toLowerCase() === awayTeamName.toLowerCase();
+                    return (
+                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 6px", background: isHome || isAway ? "#1e293b" : "transparent", borderRadius: 6 }}>
+                        <span>{safeNum(r?.position || r?.pos || idx + 1, idx + 1)}. {tName} {isHome ? " (HOME)" : ""} {isAway ? " (AWAY)" : ""}</span>
+                        <span>{safeNum(r?.points || r?.pts, 0)} pts | P {safeNum(r?.played || r?.games, 0)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ fontWeight: 800, fontSize: 17, marginTop: 20 }}>
+            Head to Head Report - {homeTeamName} vs {awayTeamName}
+          </div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 2 }}>
+            What happened when these 2 teams met before.
+          </div>
+          {loadingH2h && (
+            <div style={{ color: "#fbbf24", marginTop: 8, fontWeight: 700 }}>Loading Head to Head...</div>
+          )}
+          {!loadingH2h && h2hError && (
+            <div style={{ background: "#fef3c7", color: "#92400e", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 13 }}>{h2hError}</div>
+          )}
+          {!loadingH2h && !h2hError && h2h && (
+            <div>
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{homeTeamName} Wins</div>
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>{h2hHomeWins}</div>
+                </div>
+                <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>Draws</div>
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>{h2hDraws}</div>
+                </div>
+                <div style={{ flex: 1, background: "#0f172a", borderRadius: 12, padding: 10, textAlign: "center" }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{awayTeamName} Wins</div>
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>{h2hAwayWins}</div>
+                </div>
+              </div>
+              <div style={{ background: "#0f172a", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 13, textAlign: "center" }}>
+                Total: {h2hTotal} | Goals: {h2hHomeGoals} - {h2hAwayGoals} | BTTS: {h2hBtts} of {h2hTotal} | Over 2.5: {h2hOver25} of {h2hTotal}
+              </div>
+              <div style={{ background: "#0f172a", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 13, textAlign: "center", fontWeight: 700 }}>
+                {h2hHomeWins > h2hAwayWins ? homeTeamName + " dominates H2H (" + h2hHomeWins + " vs " + h2hAwayWins + ")." : h2hAwayWins > h2hHomeWins ? awayTeamName + " dominates H2H (" + h2hAwayWins + " vs " + h2hHomeWins + ")." : "H2H is balanced. No team dominates."}
+              </div>
+              {h2hMeetings.length > 0 && (
+                <div style={{ background: "#0f172a", borderRadius: 12, padding: 10, marginTop: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Last {Math.min(5, h2hMeetings.length)} Meetings - Newest First</div>
+                  {h2hMeetings.slice(0, 5).map((m: any, idx: number) => {
+                    const mHome = safeStr(m?.home || m?.home_team || m?.homeTeam, "");
+                    const mAway = safeStr(m?.away || m?.away_team || m?.awayTeam, "");
+                    const hs = safeStr(m?.home_score ?? m?.homeScore ?? m?.score_home, "-");
+                    const as = safeStr(m?.away_score ?? m?.awayScore ?? m?.score_away, "-");
+                    const mDate = formatDateShort(m?.date || m?.utcDate || m?.kickoff);
+                    const winner = safeNum(hs, 0) > safeNum(as, 0) ? mHome : safeNum(as, 0) > safeNum(hs, 0) ? mAway : "Draw";
+                    return (
+                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "6px 0", borderBottom: idx < 4 ? "1px solid #1e293b" : "none" }}>
+                        <span>{mDate} - {mHome} vs {mAway}</span>
+                        <span style={{ fontWeight: 700 }}>{hs} - {as} {winner !== "Draw" ? "(" + winner + ")" : "(Draw)"}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ fontWeight: 700, marginTop: 20 }}>
             What-If - Rest Only
           </div>
           <div style={{ color: "#94a3b8", fontSize: 12 }}>
