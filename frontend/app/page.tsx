@@ -84,6 +84,38 @@ function getWorstScore(pred: any) {
   }
 }
 
+// V4.0 SMART - Use backend smart confidence if present, else fallback to max prob
+function getConfidenceRating(pred: any) {
+  try {
+    if (!pred) return { pct: 0, basePct: 0, label: "-", color: "#64748b", bg: "#1e293b", advice: "", isSmart: false };
+    // Backend smart fields
+    const smartPct = safeNum(pred?.confidence_pct, 0);
+    const smartLabel = safeStr(pred?.confidence_label, "");
+    const smartAdvice = safeStr(pred?.confidence_advice, "");
+    const basePct = safeNum(pred?.base_confidence_pct, 0);
+    if (smartPct > 0 && smartLabel) {
+      let color = "#065f46"; let bg = "#10b981";
+      if (smartPct >= 70) { bg = "#10b981"; color = "#065f46"; }
+      else if (smartPct >= 60) { bg = "#a7f3d0"; color = "#065f46"; }
+      else if (smartPct >= 50) { bg = "#f59e0b"; color = "#451a03"; }
+      else { bg = "#ef4444"; color = "white"; }
+      return { pct: smartPct, basePct: basePct || smartPct, label: smartLabel, color, bg, advice: smartAdvice || "See breakdown below.", isSmart: true };
+    }
+    // Fallback old logic
+    const hw = safeNum(pred?.home_win_prob, 0);
+    const dr = safeNum(pred?.draw_prob, 0);
+    const aw = safeNum(pred?.away_win_prob, 0);
+    const conf = safeNum(pred?.confidence, Math.max(hw, dr, aw));
+    const pct = Math.round(conf * 100);
+    if (pct >= 70) return { pct, basePct: pct, label: "SUPER LOCK", color: "#065f46", bg: "#10b981", advice: "Very safe. Strong pick. Play Main.", isSmart: false };
+    if (pct >= 60) return { pct, basePct: pct, label: "HIGH CONFIDENCE", color: "#065f46", bg: "#a7f3d0", advice: "Good pick. Play Main, cover Worst for safety.", isSmart: false };
+    if (pct >= 50) return { pct, basePct: pct, label: "MEDIUM CONFIDENCE", color: "#451a03", bg: "#f59e0b", advice: "Play Main + cover Worst. Small stake only.", isSmart: false };
+    return { pct, basePct: pct, label: "LOW - HIGH RISK TRAP - SKIP", color: "white", bg: "#ef4444", advice: "Skip this match. Too risky. Do not chase it.", isSmart: false };
+  } catch {
+    return { pct: 0, basePct: 0, label: "-", color: "#64748b", bg: "#1e293b", advice: "", isSmart: false };
+  }
+}
+
 export default function Home() {
   const dates = useMemo(() => makeDates(), []);
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -114,7 +146,6 @@ export default function Home() {
   const [favorites, setFavorites] = useState<any>([]);
   const [pendingFavId, setPendingFavId] = useState<any>(null);
   const [fromCache, setFromCache] = useState(false);
-  // NEW ONLY - H2H + Table, nothing else changed
   const [h2h, setH2h] = useState<any>(null);
   const [tableData, setTableData] = useState<any>(null);
   const [loadingH2h, setLoadingH2h] = useState(false);
@@ -225,7 +256,6 @@ export default function Home() {
     if (selectedDate) loadFixtures(selectedDate);
   }, [selectedDate, loadFixtures]);
 
-  // NEW ONLY - Separate from loadBundle, so it cannot break loadBundle
   const loadH2h = useCallback(async (fixtureId: any) => {
     if (!fixtureId) return;
     if (h2hCache.current[fixtureId]) {
@@ -293,14 +323,12 @@ export default function Home() {
     }
   }, []);
 
-  // NEW ONLY - When a match is picked, load H2H + Table separately. Does not touch loadBundle logic.
   useEffect(() => {
     if (!selectedFixtureId || !selectedFixture) return;
     loadH2h(selectedFixtureId);
     loadTable(selectedFixture);
   }, [selectedFixtureId, selectedFixture, loadH2h, loadTable]);
 
-  // EXACTLY YOUR V3.7 loadBundle - not changed except clearing H2H/Table at start
   const loadBundle = useCallback(
     async (fixtureId: any) => {
       if (loadingPred || filtering) return;
@@ -586,8 +614,19 @@ export default function Home() {
     prediction?.over_under_pick,
     safeNum(prediction?.over_25_prob, 0) >= 0.5 ? "Over 2.5" : "Under 2.5"
   );
+  const confInfo = getConfidenceRating(prediction);
+  const over25Pct = Math.round(safeNum(prediction?.over_25_prob, 0) * 100);
+  const over25Label = over25Pct >= 60 ? "Strong Over 2.5" : over25Pct >= 50 ? "Lean Over 2.5" : "Lean Under 2.5";
 
-  // H2H + Table helpers - NEW ONLY
+  // V4.0 SMART BREAKDOWN
+  const confBreakdown = safeArray(prediction?.confidence_breakdown);
+  const confExpl = safeStr(prediction?.confidence_explanation, "");
+  const rotationRisk = prediction?.rotation_risk === true;
+  const rotationText = safeStr(prediction?.rotation_text, "");
+  const homeNext = prediction?.home_next_match || bundle?.home_next_match || {};
+  const awayNext = prediction?.away_next_match || bundle?.away_next_match || {};
+  const hasNextInfo = homeNext?.has_next || awayNext?.has_next;
+
   const h2hMeetings = safeArray(h2h?.meetings || h2h?.games || h2h?.results);
   const h2hTotal = safeNum(h2h?.total || h2h?.total_meetings || h2hMeetings.length, h2hMeetings.length);
   const h2hHomeWins = safeNum(h2h?.home_wins || h2h?.homeWins || 0, 0);
@@ -633,7 +672,7 @@ export default function Home() {
           marginBottom: 8,
         }}
       >
-        V3.8 - H2H + Table Position
+        V4.0 - Smart Confidence
       </div>
 
       <h1
@@ -648,8 +687,8 @@ export default function Home() {
       </h1>
 
       <p style={{ color: "#94a3b8", fontSize: 14, marginBottom: 16 }}>
-        1. Pick a date. 2. Pick a league. 3. Use Filter or tap a match. 4.
-        See Table, H2H, and real analysis.
+                1. Pick a date. 2. Pick a league. 3. Use Filter or tap a match. 4.
+        Check Smart Confidence first — it now looks at Form, H2H, Table, Goals + Next Match / Resting.
       </p>
 
       <div
@@ -1022,7 +1061,7 @@ export default function Home() {
                 fontWeight: 700,
               }}
             >
-              Fetching REAL analysis... Please wait 10 to 15 seconds.
+              Fetching REAL analysis... Please wait 15 to 20 seconds. Now checks Form, H2H, Table + Next Match.
             </div>
           )}
 
@@ -1319,6 +1358,100 @@ export default function Home() {
                 Play Main, cover Worst for safety.
               </div>
 
+              {/* V4.0 SMART CONFIDENCE */}
+              <div style={{ background: confInfo.bg, color: confInfo.color, borderRadius: 16, padding: 14, marginTop: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontWeight: 800, fontSize: 14 }}>Smart Confidence Rating</div>
+                  <div style={{ fontWeight: 800, fontSize: 22 }}>{confInfo.pct}%</div>
+                </div>
+                <div style={{ fontSize: 12, marginTop: 2 }}>
+                  {confInfo.isSmart ? "Base " + confInfo.basePct + "% → Smart " + confInfo.pct + "% after Form, H2H, Table, Goals + Next Match" : "Base = Highest probability"}
+                </div>
+                <div style={{ fontWeight: 800, fontSize: 18, marginTop: 4 }}>{confInfo.label}</div>
+                <div style={{ background: "rgba(0,0,0,0.25)", height: 10, borderRadius: 10, marginTop: 8, overflow: "hidden" }}>
+                  <div style={{ width: confInfo.pct + "%", height: "100%", background: confInfo.color === "white" ? "white" : confInfo.color, borderRadius: 10 }} />
+                </div>
+                <div style={{ fontSize: 13, marginTop: 8, fontWeight: 600 }}>{confInfo.advice}</div>
+                <div style={{ fontSize: 12, marginTop: 6 }}>
+                  Based on highest probability: Home {(safeNum(prediction?.home_win_prob, 0) * 100).toFixed(1)}% / Draw {(safeNum(prediction?.draw_prob, 0) * 100).toFixed(1)}% / Away {(safeNum(prediction?.away_win_prob, 0) * 100).toFixed(1)}%
+                </div>
+                <div style={{ fontSize: 12, marginTop: 4 }}>
+                  70%+ Super Lock | 60-69% High | 50-59% Medium | Below 50% Skip - Trap
+                </div>
+              </div>
+
+              {/* BREAKDOWN */}
+              {confBreakdown.length > 0 && (
+                <div style={{ background: "#0f172a", borderRadius: 16, padding: 12, marginTop: 12 }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>Why this Confidence? - Breakdown</div>
+                  {confBreakdown.map((b: any, idx: number) => {
+                    const pts = safeNum(b?.points, 0);
+                    const col = pts > 0 ? "#10b981" : pts < 0 ? "#ef4444" : "#94a3b8";
+                    const sign = pts > 0 ? "+" + pts + "%" : pts < 0 ? pts + "%" : "0%";
+                    return (
+                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 0", borderBottom: idx < confBreakdown.length - 1 ? "1px solid #1e293b" : "none" }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{safeStr(b?.factor, "")}</div>
+                          <div style={{ fontSize: 12, color: "#cbd5e1", marginTop: 2 }}>{safeStr(b?.detail, "")}</div>
+                        </div>
+                        <div style={{ fontWeight: 800, fontSize: 13, color: col, minWidth: 50, textAlign: "right" }}>{sign}</div>
+                      </div>
+                    );
+                  })}
+                  {confExpl && (
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 10, lineHeight: 1.5 }}>{confExpl}</div>
+                  )}
+                </div>
+              )}
+
+              {/* NEXT MATCH / ROTATION */}
+              <div style={{ background: rotationRisk ? "#7f1d1d" : "#0f172a", borderRadius: 16, padding: 12, marginTop: 12 }}>
+                <div style={{ fontWeight: 800, fontSize: 14 }}>Next Match / Rotation Risk - Important of Next Match</div>
+                <div style={{ fontSize: 12, color: rotationRisk ? "#fecaca" : "#94a3b8", marginTop: 4 }}>
+                  If a team has a big match in 2-3 days, they may rest starters. Confidence is reduced when this happens.
+                </div>
+                {rotationRisk && (
+                  <div style={{ background: "#ef4444", color: "white", borderRadius: 10, padding: 10, marginTop: 10, fontSize: 13, fontWeight: 700 }}>
+                    ⚠️ ROTATION RISK: {rotationText || "One team may rest players for next big match - confidence reduced."}
+                  </div>
+                )}
+                {!rotationRisk && (
+                  <div style={{ background: "#065f46", color: "#dcfce7", borderRadius: 10, padding: 10, marginTop: 10, fontSize: 13 }}>
+                    ✅ No rotation risk. No big match in next 2-3 days for the predicted winner.
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <div style={{ flex: 1, background: "#1e293b", borderRadius: 12, padding: 10 }}>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{homeTeamName} Next</div>
+                    {homeNext?.has_next ? (
+                      <div style={{ fontSize: 12, marginTop: 4 }}>
+                        <b>vs {safeStr(homeNext?.opponent, "-")}</b><br />
+                        {safeStr(homeNext?.competition, "")} - {formatDateShort(homeNext?.next_date)}<br />
+                        In {safeNum(homeNext?.days_until, 0)} days - {safeStr(homeNext?.importance_label, "")}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, marginTop: 4 }}>No match in next 14 days</div>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, background: "#1e293b", borderRadius: 12, padding: 10 }}>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{awayTeamName} Next</div>
+                    {awayNext?.has_next ? (
+                      <div style={{ fontSize: 12, marginTop: 4 }}>
+                        <b>vs {safeStr(awayNext?.opponent, "-")}</b><br />
+                        {safeStr(awayNext?.competition, "")} - {formatDateShort(awayNext?.next_date)}<br />
+                        In {safeNum(awayNext?.days_until, 0)} days - {safeStr(awayNext?.importance_label, "")}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, marginTop: 4 }}>No match in next 14 days</div>
+                    )}
+                  </div>
+                </div>
+                {!hasNextInfo && (
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>Next match data not available for this fixture yet. Confidence used Form, H2H, Table + Goals only.</div>
+                )}
+              </div>
+              {/* END V4.0 */}
+
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                 <div
                   style={{
@@ -1454,6 +1587,10 @@ export default function Home() {
                     {(safeNum(prediction?.btts_prob, 0) * 100).toFixed(1)}%
                   </b>
                 </div>
+              </div>
+
+              <div style={{ background: "#0f172a", borderRadius: 12, padding: 10, marginTop: 10, fontSize: 13, textAlign: "center" }}>
+                Over 2.5 Confidence: <b>{over25Pct}% - {over25Label}</b>
               </div>
 
               <div style={{ fontWeight: 700, marginTop: 12 }}>
