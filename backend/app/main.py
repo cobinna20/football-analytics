@@ -307,3 +307,149 @@ def bundle(fixture_id: str):
 def team_stats(team_id: int, fixture_date: Optional[str] = None, date: Optional[str] = None):
     fd = fixture_date or date or "2026-11-28"
     return get_team_info(team_id, fd)
+
+# ---------- NEW ONLY - H2H + TABLE - Uses same FOOTBALL_DATA_API_KEY, same fd_get, same rate limit ----------
+@app.get("/api/standings")
+def standings(league_code: Optional[str] = None, league_name: Optional[str] = None):
+    code = (league_code or "").upper()
+    if code not in [l["code"] for l in LEAGUES]:
+        if league_name:
+            for l in LEAGUES:
+                if l["name"].lower() in league_name.lower() or league_name.lower() in l["name"].lower():
+                    code = l["code"]
+                    break
+    if code not in [l["code"] for l in LEAGUES]:
+        return {"error": "Unknown league", "standings": [], "table": []}
+    key = f"standings:{code}"
+    c = cache_get(key, 3600)
+    if c is not None:
+        return c
+    status, data = fd_get(f"/competitions/{code}/standings")
+    if status != 200 or not data or "standings" not in data:
+        return {"error": "Standings not available", "standings": [], "table": []}
+    total = []
+    for s in data.get("standings", []):
+        if s.get("type") != "TOTAL":
+            continue
+        for row in s.get("table", []):
+            try:
+                team = row.get("team", {}) or {}
+                tname = team.get("shortName") or team.get("tla") or team.get("name", "")
+                total.append({
+                    "position": row.get("position"), "pos": row.get("position"),
+                    "team": tname, "team_name": team.get("name", ""), "name": team.get("name", ""),
+                    "played": row.get("playedGames"), "games": row.get("playedGames"), "p": row.get("playedGames"),
+                    "won": row.get("won"), "w": row.get("won"),
+                    "drawn": row.get("draw"), "d": row.get("draw"),
+                    "lost": row.get("lost"), "l": row.get("lost"),
+                    "gf": row.get("goalsFor"), "goals_for": row.get("goalsFor"), "goalsFor": row.get("goalsFor"),
+                    "ga": row.get("goalsAgainst"), "goals_against": row.get("goalsAgainst"), "goalsAgainst": row.get("goalsAgainst"),
+                    "gd": row.get("goalDifference"), "goal_diff": row.get("goalDifference"),
+                    "points": row.get("points"), "pts": row.get("points"),
+                    "form": row.get("form", ""),
+                })
+            except:
+                continue
+    league_name_out = ""
+    for l in LEAGUES:
+        if l["code"] == code:
+            league_name_out = l["name"]
+            break
+    out = {"league_code": code, "league_name": league_name_out, "standings": total, "table": total}
+    if total:
+        cache_set(key, out)
+    return out
+
+@app.get("/api/h2h")
+def h2h(fixture_id: str):
+    key = f"h2h:{fixture_id}"
+    c = cache_get(key, 3600)
+    if c is not None:
+        return c
+    status, data = fd_get(f"/matches/{fixture_id}")
+    if status != 200 or not data:
+        return {"error": "fixture not found", "meetings": [], "total": 0}
+    fx = map_match(data)
+    home_id = fx["home_team"]["id"]
+    away_id = fx["away_team"]["id"]
+    home_name = fx["home_team"]["name"]
+    away_name = fx["away_team"]["name"]
+    fdate = fx["date"][:10] if fx["date"] else "2026-11-28"
+    # 1. Try head2head from match detail if Football-Data gives it
+    h2h_block = data.get("head2head", {}) or {}
+    total_from_block = h2h_block.get("numberOfMatches", 0)
+    # 2. Get real last meetings: home team last matches, filter vs away team
+    meetings = []
+    try:
+        d1 = datetime.strptime(fdate, "%Y-%m-%d")
+        date_from = (d1 - timedelta(days=730)).strftime("%Y-%m-%d")
+    except:
+        date_from = "2024-11-28"
+    s2, d2 = fd_get(f"/teams/{home_id}/matches", {"dateFrom": date_from, "dateTo": fdate, "limit": 50, "status": "FINISHED"})
+    if s2 == 200 and d2 and "matches" in d2:
+        for m in d2["matches"]:
+            try:
+                h = m.get("homeTeam", {}) or {}
+                a = m.get("awayTeam", {}) or {}
+                h_id = h.get("id")
+                a_id = a.get("id")
+                if not ((h_id == home_id and a_id == away_id) or (h_id == away_id and a_id == home_id)):
+                    continue
+                hs = m.get("score", {}).get("fullTime", {}).get("home")
+                aws = m.get("score", {}).get("fullTime", {}).get("away")
+                if hs is None or aws is None:
+                    continue
+                meetings.append({
+                    "date": m.get("utcDate", "")[:10],
+                    "home": h.get("name", ""),
+                    "away": a.get("name", ""),
+                    "home_score": hs,
+                    "away_score": aws,
+                })
+            except:
+                continue
+    meetings = sorted(meetings, key=lambda x: x.get("date", ""), reverse=True)
+    meetings = meetings[:10]
+    # 3. Count wins from meetings (most accurate), or from head2head block if meetings empty
+    home_wins = 0; draws = 0; away_wins = 0; home_goals = 0; away_goals = 0; btts = 0; over25 = 0
+    for m in meetings:
+        # Normalize to OUR home vs OUR away
+        if m["home"] == home_name:
+            my_hs = m["home_score"]; my_aws = m["away_score"]
+        else:
+            my_hs = m["away_score"]; my_aws = m["home_score"]
+        home_goals += my_hs; away_goals += my_aws
+        if my_hs > my_aws:
+            home_wins += 1
+        elif my_hs == my_aws:
+            draws += 1
+        else:
+            away_wins += 1
+        if my_hs > 0 and my_aws > 0:
+            btts += 1
+        if (my_hs + my_aws) >= 3:
+            over25 += 1
+    if len(meetings) == 0 and h2h_block:
+        try:
+            ht = h2h_block.get("homeTeam", {}) or {}
+            at = h2h_block.get("awayTeam", {}) or {}
+            # Football-Data head2head homeTeam = home team of this fixture
+            home_wins = int(ht.get("wins", 0))
+            draws = int(ht.get("draws", 0))
+            away_wins = int(at.get("wins", 0))
+            total_from_block = int(h2h_block.get("numberOfMatches", home_wins + draws + away_wins))
+        except:
+            pass
+    total = len(meetings) if len(meetings) > 0 else total_from_block
+    out = {
+        "home": home_name, "away": away_name,
+        "total": total, "total_meetings": total,
+        "home_wins": home_wins, "draws": draws, "away_wins": away_wins,
+        "home_goals": home_goals, "away_goals": away_goals,
+        "btts": btts, "btts_count": btts,
+        "over25": over25, "over_25": over25, "over_25_count": over25,
+        "meetings": meetings,
+    }
+    if meetings:
+        cache_set(key, out)
+    return out
